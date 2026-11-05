@@ -43,6 +43,8 @@ async function fixture(failRead = false) {
 		failRead,
 		keys: [] as AuthKeyStatus[],
 		nextWrite: undefined as Promise<Response> | undefined,
+		credential: undefined as { url: string; key: string } | undefined,
+		credentialWrites: 0,
 	};
 	const previous = new Map<string, PropertyDescriptor | undefined>();
 	for (const [name, value] of Object.entries({
@@ -53,6 +55,14 @@ async function fixture(failRead = false) {
 		requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0),
 		cancelAnimationFrame: clearTimeout,
 		fetch: async (url: string, init?: RequestInit) => {
+			if (url === "/api/stt/credentials") {
+				if (init?.method === "PUT") {
+					state.credential = JSON.parse(init.body as string);
+					state.credentialWrites++;
+					return Response.json({ ok: true });
+				}
+				return Response.json({ keyPresent: Boolean(state.credential?.key && state.credential.url === state.record.dictation?.local?.url) });
+			}
 			if (url === "/api/keys") return Response.json({ keys: state.keys, providers: [] });
 			if (url === "/api/settings") return state.failRead ? Response.json({}, { status: 500 }) : Response.json({ settings: state.record });
 			assert.equal(url, "/api/settings/dictation");
@@ -297,4 +307,67 @@ test("clearing each search restores the complete catalog order with Multilingual
 		await search("");
 		assert.deepEqual(order(), expected, `catalog order after clearing ${query}`);
 	}
+});
+
+
+async function selectValue(label: string, value: string) {
+	const select = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+	assert(select);
+	await act(async () => {
+		for (const option of select.querySelectorAll("option")) option.selected = option.value === value;
+		select.dispatchEvent(new window.Event("change", { bubbles: true }));
+	});
+}
+const localInput = (label: string) => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+const settingsButton = (text: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === text)!;
+
+test("local settings save a Whisper endpoint and key, preserve cloud language, and reopen confirmed", async () => {
+	const f = await fixture();
+	f.state.record.dictation = { language: "multi" };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	const { DictationSettingsControl } = await import("../components/settings/dictation-settings.tsx");
+	await f.render(<DictationSettingsControl />);
+	await selectValue("Dictation provider", "local");
+	await selectValue("Local dictation server", "whisper.cpp");
+	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await search("fr", localInput("Local dictation language"));
+	await search("secret-key", localInput("Local dictation bearer key"));
+	await click(settingsButton("Save dictation settings"));
+	assert.deepEqual(f.state.record.dictation, {
+		language: "multi", provider: "local", local: { server: "whisper.cpp", url: "http://localhost:8081/inference", language: "fr" },
+	});
+	assert.deepEqual(f.state.credential, { url: "http://localhost:8081/inference", key: "secret-key" });
+	assert.equal(localInput("Local dictation bearer key").value, "");
+	assert.equal(localInput("Local dictation bearer key").placeholder, "Key saved for this endpoint");
+	await f.render(<div />);
+	await f.render(<DictationSettingsControl />);
+	assert.equal(localInput("Transcription URL").value, "http://localhost:8081/inference");
+	await click(settingsButton("Remove key"));
+	assert.equal(f.state.credential?.key, "");
+	assert.equal(localInput("Local dictation bearer key").placeholder, "Keyless");
+});
+
+test("local settings reject invalid URLs, lock during dictation, and keep drafts after failed saves", async () => {
+	const f = await fixture();
+	const { DictationSettingsControl } = await import("../components/settings/dictation-settings.tsx");
+	await f.render(<DictationSettingsControl />);
+	await selectValue("Dictation provider", "local");
+	await search("file:///tmp/audio", localInput("Transcription URL"));
+	await click(settingsButton("Save dictation settings"));
+	assert.match(document.querySelector('[role="alert"]')!.textContent!, /HTTP/);
+	assert.equal(f.state.writes.length, 0);
+	await search("http://localhost:8080/v1/audio/transcriptions", localInput("Transcription URL"));
+	await search("lfm3", localInput("Dictation model ID"));
+	f.state.failWrite = true;
+	await click(settingsButton("Save dictation settings"));
+	assert.match(document.querySelector('[role="alert"]')!.textContent!, /Could not save/);
+	assert.equal(localInput("Dictation model ID").value, "lfm3");
+	await act(async () => { setDictationActive(true); });
+	assert(settingsButton("Save dictation settings").disabled);
+	assert(document.querySelector("fieldset")!.hasAttribute("disabled"));
+	await act(async () => { setDictationActive(false); });
+	f.state.failWrite = false;
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(f.state.record.dictation?.local?.model, "lfm3");
+	assert.equal(f.state.record.dictation?.local?.language, "auto");
 });

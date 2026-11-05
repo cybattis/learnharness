@@ -108,3 +108,20 @@ test("capture also waits for a write initiated as a pending read publishes its r
 	assert.equal(await store.getLanguage(), "multi");
 	off();
 });
+
+
+test("cloud language writes preserve confirmed local provider configuration", async () => {
+	const local = { server: "llama.cpp", url: "http://localhost:8080/v1/audio/transcriptions", model: "lfm3" };
+	let written: unknown;
+	const store = createDictationLanguageStore(async (_url, init) => {
+		if (init?.method === "PUT") {
+			written = JSON.parse(init.body as string);
+			return Response.json({ settings: { version: 1, dictation: written } });
+		}
+		return Response.json({ settings: { version: 1, dictation: { language: "en", provider: "local", local } } });
+	});
+	await store.load();
+	await store.save("pl");
+	assert.deepEqual(written, { language: "pl", provider: "local", local });
+	assert.deepEqual(await store.getSettings(), written);
+});

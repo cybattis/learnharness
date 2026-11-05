@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { after, test } from "node:test";
 import { dictationWav, parseLocalDictation, validDictationWav, LOCAL_DICTATION_AUTH, LOCAL_DICTATION_MAX_BYTES } from "../src/core/local-dictation.ts";
 import { sanitizeUserSettings } from "../src/core/settings.ts";
@@ -12,7 +14,7 @@ process.env.LH_DATA_DIR = directory;
 process.env.LH_AUTH_FILE = path.join(directory, "auth.json");
 after(() => rmSync(directory, { recursive: true, force: true }));
 const { transcribeLocal, localDictationPost, dictationCredentialsGet, dictationCredentialsPut } = await import("../src/server/local-dictation.ts");
-const { readDictationAuth } = await import("../src/store/auth.ts");
+const { readDictationAuth, writeDictationAuth } = await import("../src/store/auth.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
 const { resolveKeyStatuses } = await import("../src/server/keys.ts");
 const local = { server: "llama.cpp" as const, url: "http://localhost:8080/v1/audio/transcriptions", model: "lfm3" };
@@ -84,4 +86,38 @@ test("upload rejects changed configuration, oversized bodies, invalid WAV, and f
 	assert.equal((await localDictationPost(request(local, wav, { "content-length": String(LOCAL_DICTATION_MAX_BYTES + 1) }))).status, 413);
 	assert.equal((await localDictationPost(request(local, new Uint8Array(44)))).status, 400);
 	assert.equal((await localDictationPost(request(local, wav, { origin: "http://foreign.invalid" }))).status, 403);
+});
+
+test("route uploads multipart to both HTTP server formats and never forwards a key to a changed endpoint", async () => {
+	const received: { path: string; key?: string; language: FormDataEntryValue | null; model: FormDataEntryValue | null }[] = [];
+	const server = createServer(async (request, response) => {
+		try {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(Buffer.from(chunk));
+			const form = await new Response(Buffer.concat(chunks), { headers: { "content-type": request.headers["content-type"]! } }).formData();
+			const file = form.get("file"); assert(file instanceof Blob);
+			assert.deepEqual(new Uint8Array(await file.arrayBuffer()), wav);
+			received.push({ path: request.url!, key: request.headers.authorization, language: form.get("language"), model: form.get("model") });
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(JSON.stringify({ text: "recognized words" }));
+		} catch { response.writeHead(500); response.end(); }
+	});
+	server.listen(0, "127.0.0.1"); await once(server, "listening");
+	const address = server.address(); assert(address && typeof address !== "string");
+	const base = `http://127.0.0.1:${address.port}`;
+	try {
+		writeDictationAuth(`${base}/v1/audio/transcriptions`, "only-for-llama");
+		for (const backend of ["llama.cpp", "whisper.cpp"] as const) {
+			const config = { server: backend, url: `${base}${backend === "llama.cpp" ? "/v1/audio/transcriptions" : "/inference"}`, ...(backend === "llama.cpp" ? { model: "lfm3" } : {}) };
+			writeSettings({ version: 1, dictation: { provider: "local", local: config } });
+			const result = await localDictationPost(new Request("http://localhost/api/stt/transcribe", {
+				method: "POST", body: wav, headers: { host: "localhost", origin: "http://localhost", "x-dictation-config": encodeURIComponent(JSON.stringify(config)) },
+			}));
+			assert.equal(result.status, 200); assert.deepEqual(await result.json(), { text: "recognized words" });
+		}
+		assert.deepEqual(received, [
+			{ path: "/v1/audio/transcriptions", key: "Bearer only-for-llama", language: null, model: "lfm3" },
+			{ path: "/inference", key: undefined, language: "auto", model: null },
+		]);
+	} finally { server.close(); await once(server, "close"); }
 });

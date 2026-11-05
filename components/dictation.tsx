@@ -13,7 +13,9 @@ import { setDictationActive } from "@/components/dictation-state";
 export { isDictationActive } from "@/components/dictation-state";
 
 /**
- * Voice dictation — the cloud engine (STT wave 1, 2026-09-17).
+ * Voice dictation — shared capture for cloud streaming and local uploads.
+ * Local mode buffers PCM in memory, then uploads WAV on stop. Transport
+ * adapters live in dictation-engines.ts; the cloud tuning history follows.
  *
  * Architecture (docs/research/stt.md): the renderer captures mic audio in
  * an AudioWorklet (public/worklets/pcm-capture.js → linear16 16kHz mono),
@@ -105,13 +107,6 @@ export const METER_CELLS = 48;
 /** The Deepgram key's id in the keys store (the env-var name — the Keys
  *  section's openRow state and the PUT /api/keys/:id seam). */
 export const DEEPGRAM_KEY_ID = "DEEPGRAM_API_KEY";
-
-/** The client-authored KEYLESS line (zero-keys wave, owner 2026-09-25):
- * the token route's raw 503 message is dev-speak ("add it to auth.json
- * (desktop) or .env.local (dev)") — the surface says the short truth
- * instead. Exported for pins; the errored idle button's click recognizes
- * it and deep-links Settings → Keys → the Deepgram row. */
-
 
 /* Persistent capture graph (mitigation C, owner 2026-09-27): one
  * app-lifetime AudioContext + a module-load memo. Created under the
@@ -207,7 +202,7 @@ export type Dictation = {
 	stop: () => void;
 	/** FINISH, THEN CONTINUE (owner, 2026-10-01 "nothing gets lost" round):
 	 *  if a run is live, stop it and resolve only when the run has fully
-	 *  ended — Deepgram's last finals have landed in the target field. A
+	 *  ended — the engine's final transcript has landed in the target field. A
 	 *  submit path awaits this before building its payload, so a learner
 	 *  who forgets to stop dictation before Enter never loses the spoken
 	 *  reasoning. Idle → resolves immediately (the common no-run submit
@@ -295,17 +290,20 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		sourceRef.current?.disconnect(); sourceRef.current = null;
 		const worklet = workletRef.current;
 		if (worklet?.port.postMessage) {
-			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, 250);
-				flushCaptureRef.current = () => { clearTimeout(timer); resolve(); };
-				worklet.port.postMessage({ type: "flush" });
+			const drained = await new Promise<boolean>((resolve) => {
+				const timer = setTimeout(() => resolve(false), 1000);
+				flushCaptureRef.current = () => { clearTimeout(timer); resolve(true); };
+				try { worklet.port.postMessage({ type: "flush" }); }
+				catch { clearTimeout(timer); resolve(false); }
 			});
+			if (gen !== genRef.current) return;
+			if (!drained) { setError("Could not finish microphone capture. Try recording again."); cleanup(); return; }
 		}
 		if (gen !== genRef.current) return;
 		flushCaptureRef.current = null;
 		worklet?.disconnect(); workletRef.current = null;
 		engineRef.current?.finish();
-	}, []);
+	}, [cleanup]);
 
 	const start = useCallback(async () => {
 		if (phaseRef.current !== "idle") return;
@@ -375,9 +373,10 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 
 	const stop = useCallback(() => {
 		if (phaseRef.current !== "connecting" && phaseRef.current !== "recording") return;
+		if (!captureReadyRef.current) { cleanup(); return; }
 		changePhase("stopping");
 		void endCapture();
-	}, [changePhase, endCapture]);
+	}, [changePhase, endCapture, cleanup]);
 	stopRef.current = stop;
 	const cancel = useCallback(() => {
 		if (phaseRef.current === "idle") return;

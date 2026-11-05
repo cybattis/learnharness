@@ -40,6 +40,8 @@ import { ClaudeCodeInstallationStatus } from "./claude-code-status.tsx";
 import { ProviderMenuList } from "./model-menu.tsx";
 import { MenuShell } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
+import { useDictationLanguage } from "@/components/dictation-preference";
+import { DictationSettingsControl } from "./dictation-settings";
 import { DictationLanguageSetting } from "@/components/dictation-language";
 
 /** One pi-ai provider with plain API-key auth (the Platform seam —
@@ -599,15 +601,8 @@ export function KeysSection({
 					/>
 				))}
 				{label === "Dictation" && <>
-					<DictationLanguageSetting />
-					<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
-						Create a <a
-							href="https://console.deepgram.com/"
-							target="_blank"
-							rel="noreferrer"
-							className="underline underline-offset-2 hover:text-foreground"
-						>Deepgram API key</a> with the Member role or higher, then add it above.
-					</p>
+					<DictationCloudSettings />
+					<DictationSettingsControl />
 				</>}
 			</SettingsGroup>)}
 
@@ -1035,4 +1030,20 @@ function CustomEndpointEditor({
 			)}
 		</div>
 	);
+}
+
+function DictationCloudSettings() {
+	const preference = useDictationLanguage();
+	if (preference.settings?.provider === "local") return null;
+	return <>
+		<DictationLanguageSetting />
+		<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+			Create a <a
+				href="https://console.deepgram.com/"
+				target="_blank"
+				rel="noreferrer"
+				className="underline underline-offset-2 hover:text-foreground"
+			>Deepgram API key</a> with the Member role or higher, then add it above.
+		</p>
+	</>;
 }

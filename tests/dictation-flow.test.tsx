@@ -415,7 +415,7 @@ test("local cancel during capture uploads nothing; navigation ignores an uploadi
 	assert.deepEqual(f.state.appends, []);
 });
 
-test("finishing while microphone permission is pending drains the eventual recording", async () => {
+test("finishing before capture is ready releases immediately and stops any late microphone", async () => {
 	const f = await fixture("pl", undefined, true);
 	await f.mount();
 	const mic = deferred<{ getTracks: () => { stop: () => void }[] }>();
@@ -423,12 +423,12 @@ test("finishing while microphone permission is pending drains the eventual recor
 	await act(async () => { f.dictation.toggle(); });
 	let finished = false;
 	await act(async () => { void f.dictation.finish().then(() => { finished = true; }); });
-	assert.equal(f.dictation.phase, "stopping");
-	assert(!finished);
-	await act(async () => { mic.resolve({ getTracks: () => [{ stop() {} }] }); });
-	assert(finished);
 	assert.equal(f.dictation.phase, "idle");
-	assert.match(f.dictation.error!, /empty/);
+	assert(finished);
+	let stopped = false;
+	await act(async () => { mic.resolve({ getTracks: () => [{ stop() { stopped = true; } }] }); });
+	assert(stopped);
+	assert.equal(f.dictation.error, null);
 	assert.equal(f.state.uploads.length, 0);
 });
 
