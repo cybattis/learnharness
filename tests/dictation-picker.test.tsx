@@ -244,7 +244,9 @@ for (const source of ["none", "file", "env"] as const) test(`Deepgram editor pre
 	else await click(byTest("dictation-deepgram-row"));
 	const editor = byTest("dictation-deepgram-editor");
 	assert.equal(editor.children[0]!.getAttribute("data-testid"), "key-deepgram_api_key");
-	assert.equal(editor.children[1]!.getAttribute("data-testid"), "row-dictation-language");
+	assert.equal(editor.children[1]!.getAttribute("data-testid"), "dictation-setup-hint");
+	assert.equal(editor.children[2]!.getAttribute("data-testid"), "row-dictation-language");
+	assert(byTest("row-dictation-language").classList.contains("justify-start"));
 	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.href, "https://console.deepgram.com/");
 	assert.equal(trigger().disabled, false);
 	if (source === "env") assert.equal(document.querySelector('[data-testid="key-deepgram_api_key-input"]'), null);
@@ -327,7 +329,7 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	await addDictationProvider("local");
 	await selectValue("Local dictation server", "whisper.cpp");
 	await search("http://localhost:8081/inference", localInput("Transcription URL"));
-	await search("fr", localInput("Local dictation language"));
+	await chooseLocalLanguage("French");
 	await search("whisper-large", localInput("Dictation model ID"));
 	await search("secret-key", localInput("Local dictation bearer key"));
 	await click(settingsButton("Save dictation settings"));
@@ -350,7 +352,7 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	await click(byTest("dictation-local-row"));
 	assert.equal(localInput("Transcription URL").value, "http://localhost:8081/inference");
 	assert.equal(localInput("Dictation model ID").value, "whisper-large");
-	assert.equal(localInput("Local dictation language").value, "fr");
+	assert.match(byTest("local-dictation-language").textContent!, /French/);
 	await click(settingsButton("Remove key"));
 	assert.equal(f.state.credential?.key, "");
 	assert.equal(localInput("Local dictation bearer key").placeholder, "Keyless");
@@ -525,4 +527,87 @@ test("Deepgram shortcut opens unconfigured settings and removing its key never a
 	assert.equal(document.querySelector('[data-testid="dictation-deepgram-row"]'), null);
 	assert.equal(f.state.record.dictation?.provider, undefined, "legacy default remains Deepgram without silently activating Local");
 	assert.equal(document.querySelector<HTMLInputElement>('[data-testid="dictation-active-local"]')!.checked, false);
+});
+
+
+async function chooseLocalLanguage(query: string) {
+	await click(byTest("local-dictation-language"));
+	const field = document.querySelector<HTMLInputElement>('[data-testid="local-dictation-language-search"]')!;
+	await search(query, field);
+	await key(field, "ArrowDown");
+	await key(field, "Enter");
+}
+
+test("provider language controls share styling and keyboard search while saving independently", async () => {
+	const f = await fixture();
+	f.state.record.dictation = { language: "multi" };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("deepgram");
+	const cloudClass = trigger().className;
+	await click(trigger());
+	assert(byTest("dictation-language-multi"));
+	assert.equal(document.querySelector('[data-testid="dictation-language-auto"]'), null);
+	await key(input(), "Escape");
+	await click(byTest("key-deepgram_api_key-cancel"));
+	await addDictationProvider("local");
+	assert.equal(byTest("local-dictation-language").className, cloudClass);
+	const localRow = byTest("row-local-dictation-language");
+	assert(localRow.classList.contains("justify-start"));
+	assert.equal(localRow.parentElement!.lastElementChild, localRow, "Language is the last local setting");
+	assert.equal(localRow.children[0]!.textContent, "Language");
+	assert(localRow.contains(byTest("local-dictation-language")));
+	assert.match(byTest("local-dictation-language").textContent!, /Auto-detect/);
+	await click(byTest("local-dictation-language"));
+	const field = document.querySelector<HTMLInputElement>('[data-testid="local-dictation-language-search"]')!;
+	assert.equal(document.activeElement, field);
+	assert(byTest("local-dictation-language-auto"));
+	assert.equal(document.querySelector('[data-testid="local-dictation-language-multi"]'), null);
+	await search("French", field);
+	await key(field, "ArrowDown"); await key(field, "Enter");
+	assert.equal(document.querySelector('[data-testid="local-dictation-language-menu"]'), null);
+	assert.equal(document.activeElement, byTest("local-dictation-language"));
+	assert.match(byTest("local-dictation-language").textContent!, /French/);
+	assert.equal(f.state.writes.length, 0, "local selection only updates the editor draft");
+	assert.equal(f.state.record.dictation?.language, "multi");
+	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(f.state.record.dictation?.local?.language, "fr");
+	assert.equal(f.state.record.dictation?.language, "multi");
+	assert.equal(f.state.record.dictation?.provider, undefined);
+	await click(byTest("dictation-local-row"));
+	assert.match(byTest("local-dictation-language").textContent!, /French/);
+});
+
+test("local picker supports custom backend codes, keeps Escape inside the menu, and locks during capture", async () => {
+	const f = await fixture();
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("local");
+	await click(byTest("local-dictation-language"));
+	const field = document.querySelector<HTMLInputElement>('[data-testid="local-dictation-language-search"]')!;
+	await search("xyz", field);
+	assert.match(byTest("local-dictation-language-xyz").textContent!, /Use language code: xyz/);
+	await key(field, "ArrowDown"); await key(field, "Enter");
+	assert.equal(byTest("local-dictation-language").textContent, "xyz▾");
+	await click(byTest("local-dictation-language"));
+	const invalid = document.querySelector<HTMLInputElement>('[data-testid="local-dictation-language-search"]')!;
+	await search("invalid!", invalid);
+	assert.equal(document.querySelectorAll('[data-testid="local-dictation-language-list"] button').length, 0);
+	await key(invalid, "Enter");
+	assert(byTest("local-dictation-language-menu"), "invalid codes cannot select or submit");
+	await key(invalid, "Escape");
+	assert.equal(document.querySelector('[data-testid="local-dictation-language-menu"]'), null);
+	assert(byTest("dictation-settings-editor"));
+	assert.equal(f.state.outerEscapes, 0);
+	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(f.state.record.dictation?.local?.language, "xyz");
+	await click(byTest("dictation-local-row"));
+	assert.match(byTest("local-dictation-language").textContent!, /xyz/);
+	await click(byTest("local-dictation-language"));
+	await act(async () => { setDictationActive(true); });
+	assert(byTest("local-dictation-language").disabled);
+	assert.equal(document.querySelector('[data-testid="local-dictation-language-menu"]'), null);
 });

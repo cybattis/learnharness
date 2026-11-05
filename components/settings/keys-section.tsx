@@ -171,7 +171,7 @@ export function KeysSection({
 			if (e.key !== "Escape") return;
 			// A language dropdown above this editor in the dismissal stack owns
 			// the first Escape; do not swallow it at document capture phase.
-			if (document.querySelector('[data-testid="dictation-language-menu"]')) return;
+			if (document.querySelector('[data-dictation-language-menu]')) return;
 			e.preventDefault();
 			e.stopPropagation();
 			setOpenRow(null);

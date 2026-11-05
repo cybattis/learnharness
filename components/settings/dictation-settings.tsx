@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { DICTATION_LANGUAGES, parseLocalDictation, type AuthKeyStatus, type LocalDictationSettings } from "@/src/core";
 import { useDictationLanguage } from "@/components/dictation-preference";
 import { useDictationActive } from "@/components/dictation-state";
-import { DictationLanguageSetting } from "@/components/dictation-language";
+import { DictationLanguageSetting, LocalDictationLanguageSetting } from "@/components/dictation-language";
 import { Button } from "@/components/ui/button";
 import { SettingsRow, ThinSelect } from "./controls";
 import { AddProviderRow, KeyTableRow, keyStatusLine } from "./provider-controls";
@@ -37,7 +37,7 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 	useEffect(() => {
 		if (!editing) return;
 		const escape = (event: KeyboardEvent) => {
-			if (event.key !== "Escape" || document.querySelector('[data-testid="dictation-language-menu"], [data-testid="dictation-add-provider-menu"]')) return;
+			if (event.key !== "Escape" || document.querySelector('[data-dictation-language-menu], [data-testid="dictation-add-provider-menu"]')) return;
 			event.preventDefault(); event.stopPropagation();
 			setEditing(null); setKey(""); setError(null);
 		};
@@ -111,8 +111,8 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 				}}
 				onDelete={async () => { setBusy(true); try { await onDeleteDeepgram(); closeEditor(); } catch { setError("Could not remove the Deepgram key"); } finally { setBusy(false); } }}
 				onCancel={closeEditor} testid="key-deepgram_api_key" />
-			<DictationLanguageSetting onSaved={() => { closeEditor(); setSaved(true); }} />
 			<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">Create a <a href="https://console.deepgram.com/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">Deepgram API key</a> with the Member role or higher, then add it above.</p>
+			<DictationLanguageSetting onSaved={() => { closeEditor(); setSaved(true); }} />
 			{deepgram.source === "env" && <Button type="button" variant="ghost" size="xs" onClick={closeEditor}>Cancel</Button>}
 		</fieldset>}
 		{confirmed && row("local", "Local", summary)}
@@ -129,9 +129,6 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 			<label className="block text-xs text-muted-foreground">Model ID (optional)
 				<input type="text" aria-label="Dictation model ID" className={inputClass} value={model} onChange={(event) => setModel(event.target.value)} />
 			</label>
-			<label className="block text-xs text-muted-foreground">Language code (auto for detection)
-				<input type="text" aria-label="Local dictation language" className={inputClass} value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="auto" />
-			</label>
 			<label className="block text-xs text-muted-foreground">Bearer key (optional)
 				<input aria-label="Local dictation bearer key" type="password" autoComplete="off" className={inputClass} value={key} onChange={(event) => setKey(event.target.value)} placeholder={keyForDraft ? "Key saved for this endpoint" : "Keyless"} />
 			</label>
@@ -142,6 +139,7 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 				finally { setBusy(false); }
 			}}>Remove key</Button>}
 			<p className="text-[11px] text-muted-foreground/70">Transcribes after you stop. Limit: 10 minutes per recording; 5 minutes for transcription. Keys stay on the app server and apply only to their saved endpoint.</p>
+			<LocalDictationLanguageSetting language={language} disabled={disabled} onChange={setLanguage} />
 		</fieldset>
 		<Button type="button" variant="outline" size="xs" disabled={disabled} onClick={() => void saveLocal()}>{busy || preference.saving ? "Saving…" : "Save dictation settings"}</Button>
 		<Button type="button" variant="ghost" size="xs" disabled={disabled} onClick={closeEditor}>Cancel</Button>

@@ -22,6 +22,11 @@ export function normalizeDictationUrl(value: unknown): string {
 	} catch { return ""; }
 }
 
+/** Backend-specific language codes; auto is distinct from Deepgram multilingual. */
+export function isLocalDictationLanguage(value: unknown): value is string {
+	return typeof value === "string" && /^(auto|[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$/.test(value);
+}
+
 export function parseLocalDictation(value: unknown): LocalDictationSettings | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return;
 	const raw = value as Record<string, unknown>;
@@ -29,7 +34,7 @@ export function parseLocalDictation(value: unknown): LocalDictationSettings | un
 	const url = normalizeDictationUrl(raw.url);
 	if (!url) return;
 	if (raw.model !== undefined && (typeof raw.model !== "string" || raw.model.length > 256 || /[\r\n]/.test(raw.model))) return;
-	if (raw.language !== undefined && (typeof raw.language !== "string" || !/^(auto|[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)$/.test(raw.language))) return;
+	if (raw.language !== undefined && !isLocalDictationLanguage(raw.language)) return;
 	return { server: raw.server, url, ...(raw.model ? { model: (raw.model as string).trim() } : {}), ...(raw.language ? { language: raw.language as string } : {}) };
 }
 
