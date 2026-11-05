@@ -11,17 +11,18 @@ import { useDictationLanguage } from "@/components/dictation-preference";
 
 type LanguagePreference = ReturnType<typeof useDictationLanguage>;
 
-export function DictationLanguageSetting() {
+export function DictationLanguageSetting({ onSaved }: { onSaved?: () => void } = {}) {
 	const preference = useDictationLanguage();
 	const active = useDictationActive();
 	return <SettingsRow label="Language" testid="row-dictation-language" dimmed={active}>
-		<DictationLanguagePicker preference={preference} disabled={active} />
+		<DictationLanguagePicker preference={preference} disabled={active} onSaved={onSaved} />
 	</SettingsRow>;
 }
 
-function DictationLanguagePicker({ preference, disabled }: {
+function DictationLanguagePicker({ preference, disabled, onSaved }: {
 	preference: LanguagePreference;
 	disabled: boolean;
+	onSaved?: () => void;
 }) {
 	const { language, saving, error, load, save } = preference;
 	const [open, setOpen] = useState(false);
@@ -51,6 +52,7 @@ function DictationLanguagePicker({ preference, disabled }: {
 		if (await save(code)) {
 			setOpen(false);
 			triggerRef.current?.focus();
+			onSaved?.();
 		}
 	};
 

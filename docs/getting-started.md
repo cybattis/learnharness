@@ -27,11 +27,11 @@ Sessions are saved locally, including earlier messages when context is compacted
 
 ## Dictation
 
-Choose **Settings → Providers → Dictation** and select **Deepgram** or **Local**, then click **Save dictation settings**.
+Open **Settings → Providers → Dictation → + Add a provider**, then choose **Deepgram** or **Local**. Each choice opens its own settings. Saved providers appear as collapsed rows; click a row to edit. Use the **Active** selector on a saved row to choose the dictation engine. Adding or editing settings never switches the active provider.
 
-For **Deepgram**, create a [Deepgram API key](https://console.deepgram.com/) with the **Member role or higher**, required for [short-lived token minting](https://developers.deepgram.com/reference/auth/tokens/grant). Add the key and choose the cloud language. **Multilingual** supports automatic recognition and mixed-language speech. Audio streams directly from your browser to Deepgram using a short-lived token. A `403 Insufficient permissions` error during token minting can mean the key's role is insufficient.
+For **Deepgram**, create a [Deepgram API key](https://console.deepgram.com/) with the **Member role or higher**, required for [short-lived token minting](https://developers.deepgram.com/reference/auth/tokens/grant). Save the key and choose the cloud language in its editor, then select **Active** on the Deepgram row when you want to use it. **Multilingual** supports automatic recognition and mixed-language speech. Audio streams directly from your browser to Deepgram using a short-lived token. A `403 Insufficient permissions` error during token minting can mean the key's role is insufficient.
 
-For **Local**, start your own server and enter its complete transcription URL:
+For **Local**, start your own server and enter its complete transcription URL. Click **Save dictation settings**, then select **Active** on its saved row to use it:
 
 | Server | Example transcription URL | Model |
 | --- | --- | --- |

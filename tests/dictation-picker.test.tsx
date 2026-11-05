@@ -45,6 +45,7 @@ async function fixture(failRead = false) {
 		nextWrite: undefined as Promise<Response> | undefined,
 		credential: undefined as { url: string; key: string } | undefined,
 		credentialWrites: 0,
+		failKeyWrite: false,
 	};
 	const previous = new Map<string, PropertyDescriptor | undefined>();
 	for (const [name, value] of Object.entries({
@@ -62,6 +63,12 @@ async function fixture(failRead = false) {
 					return Response.json({ ok: true });
 				}
 				return Response.json({ keyPresent: Boolean(state.credential?.key && state.credential.url === state.record.dictation?.local?.url) });
+			}
+			if (url === "/api/custom-provider") return Response.json({ baseUrl: "" });
+			if (url === "/api/keys/DEEPGRAM_API_KEY") {
+				if (state.failKeyWrite) return Response.json({ error: "Key save failed" }, { status: 500 });
+				state.keys = init?.method === "DELETE" ? [] : [{ id: "DEEPGRAM_API_KEY", info: AUTH_KEYS.find((key) => key.id === "DEEPGRAM_API_KEY")!, present: true, masked: "…test (32 chars)", source: "file", shadowedByEnv: false }];
+				return Response.json({ ok: true });
 			}
 			if (url === "/api/keys") return Response.json({ keys: state.keys, providers: [] });
 			if (url === "/api/settings") return state.failRead ? Response.json({}, { status: 500 }) : Response.json({ settings: state.record });
@@ -225,38 +232,28 @@ test("capture locks the row and dismisses an open language menu until capture en
 	assert(menu());
 });
 
-for (const source of ["none", "file", "env"] as const) test(`Language is below the full key row for ${source}-owned keys, including editing`, async () => {
+for (const source of ["none", "file", "env"] as const) test(`Deepgram editor preserves language controls for ${source}-owned keys`, async () => {
 	const f = await fixture();
 	f.state.keys = [{
 		id: "DEEPGRAM_API_KEY", info: AUTH_KEYS.find((key) => key.id === "DEEPGRAM_API_KEY")!,
-		present: source !== "none", masked: source === "none" ? null : "…test (32 chars)",
-		source, shadowedByEnv: false,
+		present: source !== "none", masked: source === "none" ? null : "…test (32 chars)", source, shadowedByEnv: false,
 	}];
 	const { KeysSection } = await import("../components/settings/keys-section.tsx");
 	await f.render(<KeysSection />);
-	const group = byTest("group-dictation");
-	const rows = group.lastElementChild!.children;
-	assert.equal(rows[0]!.getAttribute("data-testid"), "key-deepgram_api_key");
-	assert.equal(rows[1]!.getAttribute("data-testid"), "row-dictation-language");
-	assert.equal(rows[2]!.getAttribute("data-testid"), "dictation-setup-hint");
-	assert.equal(byTest("dictation-setup-hint").textContent, "Create a Deepgram API key with the Member role or higher, then add it above.");
-	assert.match(byTest("dictation-setup-hint").className, /text-muted-foreground/);
+	if (source === "none") await addDictationProvider("deepgram");
+	else await click(byTest("dictation-deepgram-row"));
+	const editor = byTest("dictation-deepgram-editor");
+	assert.equal(editor.children[0]!.getAttribute("data-testid"), "key-deepgram_api_key");
+	assert.equal(editor.children[1]!.getAttribute("data-testid"), "row-dictation-language");
 	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.href, "https://console.deepgram.com/");
-	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.textContent, "Deepgram API key");
-	assert.equal(byTest("dictation-setup-hint").querySelectorAll("a").length, 1);
-	assert.match(rows[1]!.querySelector(".font-prose")!.className, /text-\(length:--lh-prose-size\)/);
-	assert.equal(trigger().disabled, false, "language is independent of key ownership");
-	await click(byTest("key-deepgram_api_key-row"));
-	if (source !== "env") assert.ok(byTest("key-deepgram_api_key-editor"));
-	assert.ok(byTest("dictation-setup-hint"), "guidance remains visible while the key is edited");
-	await click(trigger());
-	assert(menu());
+	assert.equal(trigger().disabled, false);
+	if (source === "env") assert.equal(document.querySelector('[data-testid="key-deepgram_api_key-input"]'), null);
+	else assert(byTest("key-deepgram_api_key-editor"));
+	await click(trigger()); assert(menu());
 	await key(input(), "Escape");
-	assert.equal(menu(), null);
-	assert.equal(f.state.outerEscapes, 0);
-	if (source !== "env") assert.ok(byTest("key-deepgram_api_key-editor"), "first Escape closes only the menu");
+	assert.equal(menu(), null); assert.equal(f.state.outerEscapes, 0);
+	assert(byTest("dictation-deepgram-editor"), "first Escape closes only the language menu");
 });
-
 test("the shared model menu preserves ranking, provider identity, keyboard clamping, and row content", async () => {
 	const f = await fixture();
 	const model = (id: string, provider: string): ModelCatalogEntry => ({
@@ -325,9 +322,9 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	const f = await fixture();
 	f.state.record.dictation = { language: "multi" };
 	await act(async () => { notifySettingsSaved("dictation"); });
-	const { DictationSettingsControl } = await import("../components/settings/dictation-settings.tsx");
-	await f.render(<DictationSettingsControl />);
-	await selectValue("Dictation provider", "local");
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("local");
 	await selectValue("Local dictation server", "whisper.cpp");
 	await search("http://localhost:8081/inference", localInput("Transcription URL"));
 	await search("fr", localInput("Local dictation language"));
@@ -335,7 +332,7 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	await search("secret-key", localInput("Local dictation bearer key"));
 	await click(settingsButton("Save dictation settings"));
 	assert.deepEqual(f.state.record.dictation, {
-		language: "multi", provider: "local", local: { server: "whisper.cpp", url: "http://localhost:8081/inference", model: "whisper-large", language: "fr" },
+		language: "multi", local: { server: "whisper.cpp", url: "http://localhost:8081/inference", model: "whisper-large", language: "fr" },
 	});
 	assert.deepEqual(f.state.credential, { url: "http://localhost:8081/inference", key: "secret-key" });
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
@@ -347,7 +344,7 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	assert.equal(localInput("Local dictation bearer key").value, "");
 	assert.equal(localInput("Local dictation bearer key").placeholder, "Key saved for this endpoint");
 	await f.render(<div />);
-	await f.render(<DictationSettingsControl />);
+	await f.render(<KeysSection />);
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
 	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "false");
 	await click(byTest("dictation-local-row"));
@@ -361,9 +358,9 @@ test("local settings collapse after saving and reopen confirmed values, includin
 
 test("local settings reject invalid URLs, lock during dictation, and keep drafts after failed saves", async () => {
 	const f = await fixture();
-	const { DictationSettingsControl } = await import("../components/settings/dictation-settings.tsx");
-	await f.render(<DictationSettingsControl />);
-	await selectValue("Dictation provider", "local");
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("local");
 	await search("file:///tmp/audio", localInput("Transcription URL"));
 	await click(settingsButton("Save dictation settings"));
 	assert.match(document.querySelector('[role="alert"]')!.textContent!, /HTTP/);
@@ -389,8 +386,8 @@ test("saved local summary keeps confirmed values while editing and failed saves 
 	const f = await fixture();
 	f.state.record.dictation = { language: "en", provider: "local", local: { server: "llama.cpp", url: "http://localhost:8080/v1/audio/transcriptions", model: "lfm3", language: "auto" } };
 	await act(async () => { notifySettingsSaved("dictation"); });
-	const { DictationSettingsControl } = await import("../components/settings/dictation-settings.tsx");
-	await f.render(<DictationSettingsControl />);
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
 	assert.match(byTest("dictation-local-status").textContent!, /llama.cpp.*lfm3.*auto.*keyless/);
 	await act(async () => { setDictationActive(true); });
@@ -413,4 +410,119 @@ test("saved local summary keeps confirmed values while editing and failed saves 
 	await click(settingsButton("Save dictation settings"));
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
 	assert.match(byTest("dictation-local-status").textContent!, /new-model/);
+});
+
+
+async function addDictationProvider(provider: "deepgram" | "local") {
+	await click(byTest("dictation-add-provider"));
+	await click(byTest(`provider-option-${provider}`));
+	assert.equal(document.querySelector('[data-testid="dictation-add-provider-menu"]'), null);
+}
+
+
+async function activateDictation(provider: "deepgram" | "local") {
+	const radio = document.querySelector<HTMLInputElement>(`[data-testid="dictation-active-${provider}"]`)!;
+	assert(radio);
+	await act(async () => {
+		// linkedom lacks radio activation; supply the native checked state before click.
+		radio.checked = true;
+		radio.dispatchEvent(new window.Event("click", { bubbles: true }));
+	});
+}
+
+test("dictation Add menu offers only unconfigured providers and opens the matching editor", async () => {
+	const f = await fixture();
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	assert.equal(document.querySelector('[data-testid="dictation-deepgram-row"]'), null);
+	assert.equal(document.querySelector('[data-testid="dictation-local-row"]'), null);
+	assert.equal(document.querySelector('select[aria-label="Dictation provider"]'), null);
+	await click(byTest("dictation-add-provider"));
+	assert.deepEqual([...document.querySelectorAll('[data-testid="provider-list"] button')].map((option) => option.getAttribute("data-testid")), ["provider-option-deepgram", "provider-option-local"]);
+	await key(byTest("provider-search"), "ArrowDown");
+	await key(byTest("provider-search"), "Enter");
+	assert(byTest("dictation-deepgram-editor"));
+	assert(byTest("key-deepgram_api_key-input"));
+	assert.equal(document.querySelector('input[aria-label="Transcription URL"]'), null);
+	await click(byTest("key-deepgram_api_key-cancel"));
+	await addDictationProvider("local");
+	assert(localInput("Transcription URL"));
+	assert.equal(document.querySelector('[data-testid="dictation-deepgram-editor"]'), null);
+	assert.equal(f.state.writes.length, 0, "opening setup never activates or saves a provider");
+});
+
+test("setup and edits never activate providers; only Active radios switch the saved choice", async () => {
+	const f = await fixture();
+	const local = { server: "llama.cpp" as const, url: "http://localhost:8080/v1/audio/transcriptions", model: "lfm3", language: "auto" };
+	f.state.record.dictation = { language: "multi", provider: "local", local };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("deepgram");
+	await search("deepgram-test-key", localInput("Deepgram key"));
+	f.state.failKeyWrite = true;
+	await click(byTest("key-deepgram_api_key-save"));
+	assert(byTest("dictation-deepgram-editor"));
+	assert.match(byTest("key-deepgram_api_key-error").textContent!, /Key save failed/);
+	f.state.failKeyWrite = false;
+	await click(byTest("key-deepgram_api_key-save"));
+	assert.equal(document.querySelector('[data-testid="dictation-deepgram-editor"]'), null);
+	assert.equal(f.state.record.dictation?.provider, "local");
+	assert(document.querySelector<HTMLInputElement>('[data-testid="dictation-active-local"]')!.checked);
+	await click(byTest("dictation-add-provider"));
+	assert.equal(document.querySelectorAll('[data-testid="provider-list"] button').length, 0);
+	await click(byTest("dictation-add-provider"));
+	await activateDictation("deepgram");
+	assert.equal(f.state.record.dictation?.provider, "deepgram");
+	assert.deepEqual(f.state.record.dictation?.local, local);
+	assert.equal(f.state.record.dictation?.language, "multi");
+	await click(byTest("dictation-local-row"));
+	await search("updated-model", localInput("Dictation model ID"));
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(f.state.record.dictation?.provider, "deepgram");
+	assert.equal(f.state.record.dictation?.local?.model, "updated-model");
+	await activateDictation("local");
+	assert.equal(f.state.record.dictation?.provider, "local");
+	await click(byTest("dictation-deepgram-row"));
+	await click(trigger());
+	await click(byTest("dictation-language-pl"));
+	assert.equal(f.state.record.dictation?.language, "pl");
+	assert.equal(f.state.record.dictation?.provider, "local");
+	assert.equal(document.querySelector('[data-testid="dictation-deepgram-editor"]'), null);
+});
+
+test("failed activation retains the confirmed provider and recording locks add/edit/activation", async () => {
+	const f = await fixture();
+	f.state.keys = [{ id: "DEEPGRAM_API_KEY", info: AUTH_KEYS.find((key) => key.id === "DEEPGRAM_API_KEY")!, present: true, masked: "…test (32 chars)", source: "env", shadowedByEnv: false }];
+	f.state.record.dictation = { language: "en", provider: "deepgram", local: { server: "whisper.cpp", url: "http://localhost:8081/inference" } };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	f.state.failWrite = true;
+	await activateDictation("local");
+	assert.equal(f.state.record.dictation?.provider, "deepgram");
+	assert.match(document.querySelector('[data-testid="dictation-provider-settings"] [role="alert"]')!.textContent!, /Could not change/);
+	assert(document.querySelector<HTMLInputElement>('[data-testid="dictation-active-deepgram"]')!.checked);
+	assert.equal(document.querySelector<HTMLInputElement>('[data-testid="dictation-active-local"]')!.checked, false);
+	await act(async () => { setDictationActive(true); });
+	for (const id of ["dictation-add-provider", "dictation-active-deepgram", "dictation-active-local", "dictation-deepgram-row", "dictation-local-row"]) assert(byTest(id).disabled, id);
+});
+
+test("Deepgram shortcut opens unconfigured settings and removing its key never activates Local", async () => {
+	const f = await fixture();
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection initialRow="DEEPGRAM_API_KEY" />);
+	assert(byTest("key-deepgram_api_key-input"));
+	await search("deepgram-test-key", localInput("Deepgram key"));
+	await click(byTest("key-deepgram_api_key-save"));
+	assert.equal(f.state.record.dictation?.provider, undefined);
+	await addDictationProvider("local");
+	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(f.state.record.dictation?.provider, undefined);
+	await click(byTest("dictation-deepgram-row"));
+	await click(byTest("key-deepgram_api_key-delete"));
+	assert.equal(document.querySelector('[data-testid="dictation-deepgram-row"]'), null);
+	assert.equal(f.state.record.dictation?.provider, undefined, "legacy default remains Deepgram without silently activating Local");
+	assert.equal(document.querySelector<HTMLInputElement>('[data-testid="dictation-active-local"]')!.checked, false);
 });
