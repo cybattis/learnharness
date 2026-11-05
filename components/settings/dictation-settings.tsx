@@ -141,8 +141,20 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 			<p className="text-[11px] text-muted-foreground/70">Transcribes after you stop. Limit: 10 minutes per recording; 5 minutes for transcription. Keys stay on the app server and apply only to their saved endpoint.</p>
 			<LocalDictationLanguageSetting language={language} disabled={disabled} onChange={setLanguage} />
 		</fieldset>
-		<Button type="button" variant="outline" size="xs" disabled={disabled} onClick={() => void saveLocal()}>{busy || preference.saving ? "Saving…" : "Save dictation settings"}</Button>
-		<Button type="button" variant="ghost" size="xs" disabled={disabled} onClick={closeEditor}>Cancel</Button>
+		<div className="flex items-center gap-2 px-1 py-1.5" data-testid="dictation-local-actions">
+			<button type="button" data-testid="dictation-local-save" disabled={disabled} onClick={() => void saveLocal()}
+				className="shrink-0 text-xs text-foreground underline-offset-2 hover:underline disabled:text-muted-foreground/40 disabled:no-underline">Save</button>
+			<button type="button" data-testid="dictation-local-cancel" disabled={disabled} onClick={closeEditor}
+				className="shrink-0 text-xs text-muted-foreground/70 underline-offset-2 hover:text-foreground hover:underline">Cancel</button>
+			{confirmed && <button type="button" data-testid="dictation-local-delete" disabled={disabled} onClick={async () => {
+				setBusy(true); setError(null); setSaved(false);
+				try {
+					if (!await preference.deleteLocal()) throw new Error("Could not delete local dictation settings. Try again.");
+					setKeyPresent(false); closeEditor();
+				} catch { setError("Could not delete local dictation settings. Try again."); }
+				finally { setBusy(false); }
+			}} className="shrink-0 text-xs text-muted-foreground/70 underline-offset-2 hover:text-red-500 hover:underline">Delete</button>}
+		</div>
 		</div>}
 		<AddProviderRow testid="dictation-add-provider" disabled={disabled}
 			addable={[

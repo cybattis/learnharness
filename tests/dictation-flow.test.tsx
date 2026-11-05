@@ -461,3 +461,16 @@ test("a stalled worklet flush fails explicitly instead of uploading a truncated 
 	assert.equal(f.state.uploads.length, 0);
 	assert.deepEqual(f.state.appends, []);
 });
+
+
+test("selected Local without configuration reports setup required and never falls back to cloud", async () => {
+	const f = await fixture("en", undefined, true);
+	f.state.record.dictation = { provider: "local", language: "en" };
+	await f.mount();
+	await act(async () => { f.dictation.toggle(); });
+	assert.match(f.dictation.error!, /Configure a local dictation endpoint/);
+	assert.equal(f.dictation.phase, "idle");
+	assert.equal(f.state.captures, 0);
+	assert.equal(f.state.tokens, 0);
+	assert.equal(f.state.uploads.length, 0);
+});

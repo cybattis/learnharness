@@ -426,7 +426,7 @@ export function parseDictationSettingsBody(body: unknown): SettingsBodyResult<Di
 		if (!local) return { ok: false, error: "Invalid local dictation endpoint, server, model, or language" };
 		settings.local = local;
 	}
-	if (settings.provider === "local" && !settings.local) return { ok: false, error: "Configure a local dictation endpoint" };
+	// An explicitly selected provider can remain unavailable after deletion.
 	return { ok: true, settings };
 }
 

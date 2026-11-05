@@ -13,7 +13,7 @@ const directory = mkdtempSync(path.join(tmpdir(), "lh-local-dictation-"));
 process.env.LH_DATA_DIR = directory;
 process.env.LH_AUTH_FILE = path.join(directory, "auth.json");
 after(() => rmSync(directory, { recursive: true, force: true }));
-const { transcribeLocal, localDictationPost, dictationCredentialsGet, dictationCredentialsPut } = await import("../src/server/local-dictation.ts");
+const { transcribeLocal, localDictationPost, dictationCredentialsGet, dictationCredentialsPut, localDictationDelete } = await import("../src/server/local-dictation.ts");
 const { readDictationAuth, writeDictationAuth } = await import("../src/store/auth.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
 const { resolveKeyStatuses } = await import("../src/server/keys.ts");
@@ -34,7 +34,7 @@ test("local settings validate independently of cloud language and survive saniti
 	const dictation = { provider: "local", language: "multi", local };
 	assert.deepEqual(parseDictationSettingsBody(dictation), { ok: true, settings: dictation });
 	assert.deepEqual(sanitizeUserSettings({ version: 1, dictation })?.dictation, dictation);
-	assert.equal(parseDictationSettingsBody({ provider: "local" }).ok, false);
+	assert.deepEqual(parseDictationSettingsBody({ provider: "local" }), { ok: true, settings: { provider: "local" } });
 	for (const url of ["file:///tmp/test", "http://user:password@localhost/inference", "http://localhost/inference?key=secret"]) assert.equal(parseLocalDictation({ ...local, url }), undefined);
 	assert.equal(parseLocalDictation({ ...local, language: "multi" }), undefined);
 });
@@ -120,4 +120,43 @@ test("route uploads multipart to both HTTP server formats and never forwards a k
 			{ path: "/inference", key: undefined, language: "auto", model: null },
 		]);
 	} finally { server.close(); await once(server, "close"); }
+});
+
+
+function deleteRequest(config: unknown = local, origin = "http://localhost") {
+	return new Request("http://localhost/api/stt/local", { method: "DELETE", headers: { host: "localhost", origin, "content-type": "application/json" }, body: JSON.stringify({ local: config }) });
+}
+
+test("Delete removes configuration and private key, preserves active provider and unrelated settings", async () => {
+	const { readSettings } = await import("../src/store/settings.ts");
+	for (const provider of ["local", "deepgram"] as const) {
+		writeSettings({ version: 1, general: { autoUpdate: false }, dictation: { provider, language: "multi", local } });
+		writeDictationAuth(local.url, "local-key");
+		assert.equal((await localDictationDelete(deleteRequest(local, "http://foreign.invalid"))).status, 403);
+		assert.equal((await localDictationDelete(deleteRequest({ ...local, model: "stale-model" }))).status, 409);
+		assert(readSettings()?.dictation?.local);
+		const response = await localDictationDelete(deleteRequest());
+		assert.equal(response.status, 200);
+		const expected = { version: 1, general: { autoUpdate: false }, dictation: { provider, language: "multi" } };
+		assert.deepEqual(await response.json(), { settings: expected });
+		assert.deepEqual(readSettings(), expected);
+		assert.equal(readDictationAuth(), undefined);
+	}
+});
+
+test("Delete leaves both records unchanged on settings failure and rolls back a credential failure", async () => {
+	const original = { version: 1, dictation: { provider: "local" as const, language: "pl" as const, local } };
+	for (const fail of ["settings", "key", "read-key"] as const) {
+		let record: import("../src/core/settings.ts").UserSettings = original;
+		let credential = { url: local.url, key: "private-key" };
+		const response = await localDictationDelete(deleteRequest(), {
+			readSettings: () => record,
+			writeSettings: (next) => { if (fail === "settings") throw new Error("disk unavailable"); record = next; return next; },
+			readAuth: () => { if (fail === "read-key") throw new Error("corrupt private storage"); return credential; },
+			writeAuth: () => { if (fail === "key") throw new Error("credential write failed"); credential = { url: "", key: "" }; },
+		});
+		assert.equal(response.status, 500, fail);
+		assert.deepEqual(record, original, fail);
+		assert.equal(credential.key, "private-key", fail);
+	}
 });

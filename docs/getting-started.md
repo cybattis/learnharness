@@ -31,14 +31,14 @@ Open **Settings → Providers → Dictation → + Add a provider**, then choose 
 
 For **Deepgram**, create a [Deepgram API key](https://console.deepgram.com/) with the **Member role or higher**, required for [short-lived token minting](https://developers.deepgram.com/reference/auth/tokens/grant). Save the key and choose the cloud language in its editor, then select **Active** on the Deepgram row when you want to use it. **Multilingual** supports automatic recognition and mixed-language speech. Audio streams directly from your browser to Deepgram using a short-lived token. A `403 Insufficient permissions` error during token minting can mean the key's role is insufficient.
 
-For **Local**, start your own server and enter its complete transcription URL. Click **Save dictation settings**, then select **Active** on its saved row to use it:
+For **Local**, start your own server and enter its complete transcription URL. Click **Save**, then select **Active** on its saved row to use it:
 
 | Server | Example transcription URL | Model |
 | --- | --- | --- |
 | llama.cpp | `http://localhost:8080/v1/audio/transcriptions` | An audio-capable model such as LFM3-Audio, with its required audio components |
 | whisper.cpp | `http://localhost:8081/inference` | A Whisper model loaded by whisper-server |
 
-Saved local dictation settings collapse into a summary row showing the server, URL, model, language, and key status. Click the row to edit the saved values.
+Saved local dictation settings collapse into a summary row showing the server, URL, model, language, and key status. Click the row to edit the saved values. Use **Save** or **Cancel** beneath the fields. **Delete** removes the Local configuration and its saved bearer key. Deleting an active Local provider leaves dictation unconfigured; select another provider explicitly to resume.
 
 The URL is used exactly as entered; the app does not append a path. Custom server paths and HTTP(S) hosts are supported. The optional model ID is sent with each upload; whisper.cpp normally uses the model loaded at startup. Leave the bearer key blank for a keyless server. Saved keys live in private credential storage and apply only to their exact endpoint URL; changing URLs requires entering a key for the new destination. Use **Remove key** to return to keyless access.
 

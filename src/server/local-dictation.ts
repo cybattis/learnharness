@@ -1,6 +1,7 @@
+import type { UserSettings } from "../core/settings.ts";
 import { LOCAL_DICTATION_MAX_BYTES, LOCAL_DICTATION_TIMEOUT_MS, normalizeDictationUrl, parseLocalDictation, validDictationWav, type LocalDictationSettings } from "../core/local-dictation.ts";
 import { readDictationAuth, writeDictationAuth } from "../store/auth.ts";
-import { readSettings } from "../store/settings.ts";
+import { readSettings, writeSettings } from "../store/settings.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 import { desktopAPIAuthorized } from "./desktop-access.ts";
 import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
@@ -34,6 +35,40 @@ export async function dictationCredentialsPut(request: Request): Promise<Respons
 		return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
 	} catch (error) {
 		return failure(error instanceof CustomBodyLimitError ? "Credential request too large" : "Could not save local dictation key", error instanceof CustomBodyLimitError ? 413 : 400);
+	}
+}
+
+const deletionStore = { readSettings, writeSettings, readAuth: readDictationAuth, writeAuth: writeDictationAuth };
+
+/** Remove the saved configuration and its key without selecting another engine. */
+export async function localDictationDelete(request: Request, store: {
+	readSettings: typeof readSettings;
+	writeSettings: (record: UserSettings) => UserSettings;
+	readAuth: typeof readDictationAuth;
+	writeAuth: typeof writeDictationAuth;
+} = deletionStore): Promise<Response> {
+	if (!authorized(request)) return failure("Use the LearnHarness settings window", 403);
+	try {
+		const body = await readBoundedJson(request, 16_384);
+		const expected = body && typeof body === "object" && !Array.isArray(body)
+			? parseLocalDictation((body as { local?: unknown }).local) : undefined;
+		if (!expected) return failure("Expected the saved local dictation configuration");
+		const record = store.readSettings();
+		const current = record?.dictation?.local;
+		if (!record || !current || JSON.stringify(parseLocalDictation(current)) !== JSON.stringify(expected)) return failure("Local dictation settings changed. Reopen the editor and retry.", 409);
+		// Read private storage before writing either file; corruption fails closed.
+		store.readAuth();
+		const { local: _local, ...dictation } = record.dictation!;
+		const stored = store.writeSettings({ ...record, dictation });
+		try { store.writeAuth(current.url, ""); }
+		catch {
+			// The key write is atomic. Restore the configuration if it cannot be removed.
+			store.writeSettings(record);
+			throw new Error("Credential removal failed");
+		}
+		return Response.json({ settings: stored }, { headers: { "cache-control": "no-store" } });
+	} catch (error) {
+		return failure(error instanceof CustomBodyLimitError ? "Delete request too large" : "Could not delete local dictation settings. Try again.", error instanceof CustomBodyLimitError ? 413 : 500);
 	}
 }
 

@@ -55,27 +55,27 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 		return reading;
 	}
 
-	function saveSettings(settings: DictationSettings): Promise<boolean> {
+	function writeSettings(settings: DictationSettings, removeLocal = false): Promise<boolean> {
 		// A different selection must never inherit the previous write's success.
 		if (writing || snapshot.language === undefined) return Promise.resolve(false);
 		revision++;
 		reading = null;
 		writing = Promise.resolve().then(async () => {
 			try {
-				const res = await request("/api/settings/dictation", {
-					method: "PUT", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify(settings),
+				const res = await request(removeLocal ? "/api/stt/local" : "/api/settings/dictation", {
+					method: removeLocal ? "DELETE" : "PUT", headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(removeLocal ? { local: settings.local } : settings),
 				});
 				if (!res.ok) throw new Error();
 				const body = await res.json() as { settings: UserSettings };
-				const confirmed = body.settings?.dictation?.language;
+				const confirmed = body.settings?.dictation?.language ?? (removeLocal ? FACTORY_SETTINGS.dictation.language : undefined);
 				if (!isDictationLanguage(confirmed)) throw new Error();
 				needsRead = false;
 				publish({ language: confirmed, settings: body.settings.dictation, error: null });
 				saved();
 				return true;
 			} catch {
-				publish({ error: "Could not save dictation language. Try again." });
+				publish({ error: removeLocal ? "Could not delete local dictation. Try again." : "Could not save dictation language. Try again." });
 				return false;
 			} finally {
 				writing = null;
@@ -95,6 +95,11 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 		}
 	}
 
+	function saveSettings(settings: DictationSettings): Promise<boolean> { return writeSettings(settings); }
+	function deleteLocal(): Promise<boolean> {
+		if (!snapshot.settings?.local) return Promise.resolve(false);
+		return writeSettings(snapshot.settings, true);
+	}
 	function save(language: DictationLanguage): Promise<boolean> {
 		return saveSettings({ ...snapshot.settings, language });
 	}
@@ -103,7 +108,7 @@ export function createDictationLanguageStore(request: typeof fetch, saved: () =>
 		return { ...snapshot.settings, language: snapshot.language };
 	}
 	return {
-		load, save, saveSettings, getLanguage, getSettings,
+		load, save, saveSettings, deleteLocal, getLanguage, getSettings,
 		getSnapshot: () => snapshot,
 		getServerSnapshot: () => INITIAL,
 		subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -135,5 +140,5 @@ function subscribe(listener: () => void) {
 
 export function useDictationLanguage() {
 	const snapshot = useSyncExternalStore(subscribe, store.getSnapshot, store.getServerSnapshot);
-	return { ...snapshot, load: store.load, save: store.save, saveSettings: store.saveSettings, getSettings: store.getSettings, getLanguage: store.getLanguage };
+	return { ...snapshot, load: store.load, save: store.save, saveSettings: store.saveSettings, deleteLocal: store.deleteLocal, getSettings: store.getSettings, getLanguage: store.getLanguage };
 }
