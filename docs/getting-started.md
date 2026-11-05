@@ -38,6 +38,8 @@ For **Local**, start your own server and enter its complete transcription URL:
 | llama.cpp | `http://localhost:8080/v1/audio/transcriptions` | An audio-capable model such as LFM3-Audio, with its required audio components |
 | whisper.cpp | `http://localhost:8081/inference` | A Whisper model loaded by whisper-server |
 
+Saved local dictation settings collapse into a summary row showing the server, URL, model, language, and key status. Click the row to edit the saved values.
+
 The URL is used exactly as entered; the app does not append a path. Custom server paths and HTTP(S) hosts are supported. The optional model ID is sent with each upload; whisper.cpp normally uses the model loaded at startup. Leave the bearer key blank for a keyless server. Saved keys live in private credential storage and apply only to their exact endpoint URL; changing URLs requires entering a key for the new destination. Use **Remove key** to return to keyless access.
 
 Local **Language code** defaults to `auto` for detection. Enter a language code supported by your model, such as `en` or `fr`, to request that language. This is independent of Deepgram's language and multilingual setting; recognition quality and language support depend on the backend/model. Use an up-to-date llama.cpp build with LFM3-Audio support. The app does not install servers or download models.

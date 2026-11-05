@@ -321,7 +321,7 @@ async function selectValue(label: string, value: string) {
 const localInput = (label: string) => document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
 const settingsButton = (text: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === text)!;
 
-test("local settings save a Whisper endpoint and key, preserve cloud language, and reopen confirmed", async () => {
+test("local settings collapse after saving and reopen confirmed values, including after remount", async () => {
 	const f = await fixture();
 	f.state.record.dictation = { language: "multi" };
 	await act(async () => { notifySettingsSaved("dictation"); });
@@ -331,17 +331,29 @@ test("local settings save a Whisper endpoint and key, preserve cloud language, a
 	await selectValue("Local dictation server", "whisper.cpp");
 	await search("http://localhost:8081/inference", localInput("Transcription URL"));
 	await search("fr", localInput("Local dictation language"));
+	await search("whisper-large", localInput("Dictation model ID"));
 	await search("secret-key", localInput("Local dictation bearer key"));
 	await click(settingsButton("Save dictation settings"));
 	assert.deepEqual(f.state.record.dictation, {
-		language: "multi", provider: "local", local: { server: "whisper.cpp", url: "http://localhost:8081/inference", language: "fr" },
+		language: "multi", provider: "local", local: { server: "whisper.cpp", url: "http://localhost:8081/inference", model: "whisper-large", language: "fr" },
 	});
 	assert.deepEqual(f.state.credential, { url: "http://localhost:8081/inference", key: "secret-key" });
+	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
+	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "false");
+	assert.equal(byTest("dictation-local-status").textContent, "whisper.cpp · http://localhost:8081/inference · whisper-large · fr · API key");
+	assert(!byTest("dictation-local-status").textContent!.includes("secret-key"));
+	await click(byTest("dictation-local-row"));
+	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "true");
 	assert.equal(localInput("Local dictation bearer key").value, "");
 	assert.equal(localInput("Local dictation bearer key").placeholder, "Key saved for this endpoint");
 	await f.render(<div />);
 	await f.render(<DictationSettingsControl />);
+	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
+	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "false");
+	await click(byTest("dictation-local-row"));
 	assert.equal(localInput("Transcription URL").value, "http://localhost:8081/inference");
+	assert.equal(localInput("Dictation model ID").value, "whisper-large");
+	assert.equal(localInput("Local dictation language").value, "fr");
 	await click(settingsButton("Remove key"));
 	assert.equal(f.state.credential?.key, "");
 	assert.equal(localInput("Local dictation bearer key").placeholder, "Keyless");
@@ -370,4 +382,35 @@ test("local settings reject invalid URLs, lock during dictation, and keep drafts
 	await click(settingsButton("Save dictation settings"));
 	assert.equal(f.state.record.dictation?.local?.model, "lfm3");
 	assert.equal(f.state.record.dictation?.local?.language, "auto");
+});
+
+
+test("saved local summary keeps confirmed values while editing and failed saves stay open", async () => {
+	const f = await fixture();
+	f.state.record.dictation = { language: "en", provider: "local", local: { server: "llama.cpp", url: "http://localhost:8080/v1/audio/transcriptions", model: "lfm3", language: "auto" } };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	const { DictationSettingsControl } = await import("../components/settings/dictation-settings.tsx");
+	await f.render(<DictationSettingsControl />);
+	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
+	assert.match(byTest("dictation-local-status").textContent!, /llama.cpp.*lfm3.*auto.*keyless/);
+	await act(async () => { setDictationActive(true); });
+	assert(byTest("dictation-local-row").disabled);
+	await act(async () => { setDictationActive(false); });
+	await click(byTest("dictation-local-row"));
+	await search("unsaved-model", localInput("Dictation model ID"));
+	assert.match(byTest("dictation-local-status").textContent!, /lfm3/);
+	await click(byTest("dictation-local-row"));
+	await click(byTest("dictation-local-row"));
+	assert.equal(localInput("Dictation model ID").value, "lfm3");
+	await search("new-model", localInput("Dictation model ID"));
+	f.state.failWrite = true;
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "true");
+	assert.equal(localInput("Dictation model ID").value, "new-model");
+	assert.match(document.querySelector('[role="alert"]')!.textContent!, /Could not save/);
+	assert.match(byTest("dictation-local-status").textContent!, /lfm3/);
+	f.state.failWrite = false;
+	await click(settingsButton("Save dictation settings"));
+	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
+	assert.match(byTest("dictation-local-status").textContent!, /new-model/);
 });
