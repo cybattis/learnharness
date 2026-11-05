@@ -443,3 +443,21 @@ test("local endpoint errors remain visible without cloud fallback", async () => 
 	assert.deepEqual(f.state.appends, []);
 	assert.equal(f.state.tokens, 0);
 });
+
+test("a stalled worklet flush fails explicitly instead of uploading a truncated recording", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = await fixture("pl", undefined, true);
+	await f.mount();
+	await act(async () => { f.dictation.toggle(); });
+	const worklet = Worklet.all[0]!;
+	worklet.emit({ type: "audio", buffer: new Int16Array([1]).buffer });
+	worklet.port.postMessage = () => {};
+	let finished = false;
+	await act(async () => { void f.dictation.finish().then(() => { finished = true; }); });
+	await act(async () => { t.mock.timers.tick(1000); });
+	assert(finished);
+	assert.equal(f.dictation.phase, "idle");
+	assert.match(f.dictation.error!, /Could not finish microphone capture/);
+	assert.equal(f.state.uploads.length, 0);
+	assert.deepEqual(f.state.appends, []);
+});
