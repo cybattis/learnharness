@@ -105,7 +105,9 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 		} finally { setTesting(false); }
 	};
 	const keyForDraft = keyPresent && confirmed?.server === server && localDictationBaseUrl({ server, url }) === localDictationBaseUrl(confirmed);
-	const summary = confirmed ? [confirmed.server, localDictationBaseUrl(confirmed), confirmed.model, confirmed.language ?? "auto", keyPresent ? "API key" : "keyless"].filter(Boolean).join(" · ") : "";
+	const localLanguage = confirmed?.language ?? "auto";
+	const localLanguageLabel = localLanguage === "auto" ? "Auto-detect" : DICTATION_LANGUAGES.find((item) => item.code === localLanguage)?.label ?? localLanguage;
+	const summary = confirmed ? [confirmed.server, localDictationBaseUrl(confirmed), confirmed.model, localLanguageLabel, keyPresent ? "API key" : "keyless"].filter(Boolean).join(" · ") : "";
 	const row = (provider: Provider, label: string, status: string) => <div className="flex items-center gap-3" key={provider}>
 		<button type="button" data-testid={`dictation-${provider}-row`} aria-expanded={editing === provider} disabled={disabled}
 			onClick={() => editing === provider ? closeEditor() : openEditor(provider)}
@@ -115,12 +117,10 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 		</button>
 		<label className="flex shrink-0 items-center gap-1.5 font-ui text-xs text-muted-foreground">
 			<input type="radio" name="dictation-active-provider" aria-label={`Use ${label} for dictation`} data-testid={`dictation-active-${provider}`}
-				checked={activeProvider === provider} disabled={disabled} onChange={() => void activate(provider)} />Active
+				checked={activeProvider === provider} disabled={disabled} onChange={() => void activate(provider)} />
 		</label>
 	</div>;
-	return <div className="space-y-2" data-testid="dictation-provider-settings" onChange={() => setSaved(false)}>
-		{deepgram.present && row("deepgram", "Deepgram", `${keyStatusLine(deepgram)} · ${DICTATION_LANGUAGES.find((item) => item.code === preference.language)?.label ?? preference.language ?? ""}`)}
-		{editing === "deepgram" && <fieldset disabled={disabled} className="space-y-2" data-testid="dictation-deepgram-editor">
+	const deepgramEditor = editing === "deepgram" ? <fieldset disabled={disabled} className="space-y-2" data-testid="dictation-deepgram-editor">
 			<KeyTableRow label="Deepgram" docsUrl={deepgram.info?.docsUrl} status={deepgram} expanded onToggle={() => {}}
 				onSave={async (value) => {
 					setBusy(true);
@@ -133,9 +133,8 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 			<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">Create a <a href="https://console.deepgram.com/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-foreground">Deepgram API key</a> with the Member role or higher, then add it above.</p>
 			<DictationLanguageSetting onSaved={() => { closeEditor(); setSaved(true); }} />
 			{deepgram.source === "env" && <Button type="button" variant="ghost" size="xs" onClick={closeEditor}>Cancel</Button>}
-		</fieldset>}
-		{confirmed && row("local", "Local", summary)}
-		{editing === "local" && <div data-testid="dictation-settings-editor" className="space-y-2">
+		</fieldset> : null;
+	const localEditor = editing === "local" ? <div data-testid="dictation-settings-editor" className="space-y-2">
 		<fieldset disabled={disabled} className="space-y-2">
 			<SettingsRow label="Server">
 				<ThinSelect ariaLabel="Local dictation server" value={server} onChange={(value) => setServer(value as typeof server)}>
@@ -179,13 +178,20 @@ export function DictationSettingsControl({ deepgram, onSaveDeepgram, onDeleteDee
 				{connection && <span role={connection.status === "error" ? "alert" : "status"} data-testid="dictation-local-connection" className={`min-w-0 text-xs ${connection.status === "error" ? "text-destructive" : connection.status === "loading" ? "text-amber-500" : "text-green-500"}`}>{connection.message}</span>}
 			</div>
 		</div>
-		</div>}
+		</div> : null;
+	return <div className="space-y-2" data-testid="dictation-provider-settings" onChange={() => setSaved(false)}>
+		{deepgram.present && row("deepgram", "Deepgram", `${keyStatusLine(deepgram)} · ${DICTATION_LANGUAGES.find((item) => item.code === preference.language)?.label ?? preference.language ?? ""}`)}
+		{deepgram.present && deepgramEditor}
+		{confirmed && row("local", "Local", summary)}
+		{confirmed && localEditor}
 		<AddProviderRow testid="dictation-add-provider" disabled={disabled}
 			addable={[
 				...(!deepgram.present ? [{ id: "deepgram", label: "Deepgram", envVar: "DEEPGRAM_API_KEY" }] : []),
 				...(!confirmed ? [{ id: "local", label: "Local", envVar: "Server configuration" }] : []),
 			]}
 			onPick={(provider) => openEditor(provider.id as Provider)} />
+		{!deepgram.present && deepgramEditor}
+		{!confirmed && localEditor}
 		{saved && <span role="status" className="ml-2 text-xs text-muted-foreground">Saved</span>}
 		{(error || preference.error) && <p role="alert" className="text-xs text-destructive">{error ?? preference.error}</p>}
 	</div>;

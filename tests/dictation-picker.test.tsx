@@ -362,7 +362,7 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	assert.deepEqual(f.state.credential, { url: "http://localhost:8081/inference", key: "secret-key" });
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
 	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "false");
-	assert.equal(byTest("dictation-local-status").textContent, "whisper.cpp · http://localhost:8081 · whisper-large · fr · API key");
+	assert.equal(byTest("dictation-local-status").textContent, "whisper.cpp · http://localhost:8081 · whisper-large · French · API key");
 	assert(!byTest("dictation-local-status").textContent!.includes("secret-key"));
 	await click(byTest("dictation-local-row"));
 	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "true");
@@ -488,7 +488,7 @@ test("saved local summary keeps confirmed values while editing and failed saves 
 	const { KeysSection } = await import("../components/settings/keys-section.tsx");
 	await f.render(<KeysSection />);
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
-	assert.match(byTest("dictation-local-status").textContent!, /llama.cpp.*lfm3.*auto.*keyless/);
+	assert.match(byTest("dictation-local-status").textContent!, /llama.cpp.*lfm3.*Auto-detect.*keyless/);
 	await act(async () => { setDictationActive(true); });
 	assert(byTest("dictation-local-row").disabled);
 	await act(async () => { setDictationActive(false); });
