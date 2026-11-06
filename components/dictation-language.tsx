@@ -29,7 +29,7 @@ export function LocalDictationLanguageSetting({ language, disabled, onChange }: 
 	disabled: boolean;
 	onChange: (language: string) => void;
 }) {
-	return <SettingsRow label="Language" testid="row-local-dictation-language" dimmed={disabled} align="start">
+	return <SettingsRow label="Language" testid="row-local-dictation-language" dimmed={disabled}>
 		<DictationLanguagePicker language={language} languages={LOCAL_LANGUAGES} disabled={disabled}
 			testid="local-dictation-language" ariaLabel="Local dictation language"
 			save={(code) => { onChange(code); return true; }}

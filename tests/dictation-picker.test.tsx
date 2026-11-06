@@ -4,7 +4,7 @@ import { afterEach, test } from "node:test";
 import { parseHTML } from "linkedom";
 import { setDictationActive } from "../components/dictation-state.ts";
 import { notifySettingsSaved } from "../components/settings-signal.ts";
-import { AUTH_KEYS, DICTATION_LANGUAGES, type AuthKeyStatus, type ModelCatalogEntry, type UserSettings } from "../src/core/index.ts";
+import { AUTH_KEYS, DICTATION_LANGUAGES, localDictationEndpoint, type AuthKeyStatus, type ModelCatalogEntry, type UserSettings } from "../src/core/index.ts";
 import { ModelMenuList } from "../components/settings/model-menu.tsx";
 
 let dispose: (() => Promise<void>) | undefined;
@@ -45,6 +45,10 @@ async function fixture(failRead = false) {
 		nextWrite: undefined as Promise<Response> | undefined,
 		credential: undefined as { url: string; key: string } | undefined,
 		credentialWrites: 0,
+		connectionCalls: [] as unknown[],
+		connectionResult: { status: "ready" } as { status?: string; error?: string },
+		connectionStatus: 200,
+		nextConnection: undefined as Promise<Response> | undefined,
 		failKeyWrite: false,
 		failDelete: false,
 	};
@@ -57,6 +61,11 @@ async function fixture(failRead = false) {
 		requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0),
 		cancelAnimationFrame: clearTimeout,
 		fetch: async (url: string, init?: RequestInit) => {
+			if (url === "/api/stt/test") {
+				assert.equal(init?.method, "POST");
+				state.connectionCalls.push(JSON.parse(init.body as string));
+				return state.nextConnection ?? Response.json(state.connectionResult, { status: state.connectionStatus });
+			}
 			if (url === "/api/stt/local") {
 				assert.equal(init?.method, "DELETE");
 				if (state.failDelete) return Response.json({ error: "delete failed" }, { status: 500 });
@@ -67,11 +76,12 @@ async function fixture(failRead = false) {
 			}
 			if (url === "/api/stt/credentials") {
 				if (init?.method === "PUT") {
-					state.credential = JSON.parse(init.body as string);
+					const { server, url, key } = JSON.parse(init.body as string);
+					state.credential = { url: localDictationEndpoint({ server, url }), key };
 					state.credentialWrites++;
 					return Response.json({ ok: true });
 				}
-				return Response.json({ keyPresent: Boolean(state.credential?.key && state.credential.url === state.record.dictation?.local?.url) });
+				return Response.json({ keyPresent: Boolean(state.credential?.key && state.record.dictation?.local && state.credential.url === localDictationEndpoint(state.record.dictation.local)) });
 			}
 			if (url === "/api/custom-provider") return Response.json({ baseUrl: "" });
 			if (url === "/api/keys/DEEPGRAM_API_KEY") {
@@ -322,7 +332,9 @@ async function selectValue(label: string, value: string) {
 	const select = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
 	assert(select);
 	await act(async () => {
-		for (const option of select.querySelectorAll("option")) option.selected = option.value === value;
+		const options = [...select.querySelectorAll("option")];
+		for (const option of options) option.selected = false;
+		options.find((option) => option.value === value)!.selected = true;
 		select.dispatchEvent(new window.Event("change", { bubbles: true }));
 	});
 }
@@ -337,18 +349,20 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	await f.render(<KeysSection />);
 	await addDictationProvider("local");
 	await selectValue("Local dictation server", "whisper.cpp");
-	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await search("http://localhost:8081", localInput("Base URL"));
 	await chooseLocalLanguage("French");
 	await search("whisper-large", localInput("Dictation model ID"));
 	await search("secret-key", localInput("Local dictation bearer key"));
+	assert.equal(byTest("dictation-local-save").textContent, "Connect");
 	await click(byTest("dictation-local-save"));
+	assert(![...document.querySelectorAll('[role="status"]')].some((element) => element.textContent === "Saved"));
 	assert.deepEqual(f.state.record.dictation, {
-		language: "multi", local: { server: "whisper.cpp", url: "http://localhost:8081/inference", model: "whisper-large", language: "fr" },
+		language: "multi", local: { server: "whisper.cpp", url: "http://localhost:8081/", model: "whisper-large", language: "fr" },
 	});
 	assert.deepEqual(f.state.credential, { url: "http://localhost:8081/inference", key: "secret-key" });
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
 	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "false");
-	assert.equal(byTest("dictation-local-status").textContent, "whisper.cpp · http://localhost:8081/inference · whisper-large · fr · API key");
+	assert.equal(byTest("dictation-local-status").textContent, "whisper.cpp · http://localhost:8081 · whisper-large · fr · API key");
 	assert(!byTest("dictation-local-status").textContent!.includes("secret-key"));
 	await click(byTest("dictation-local-row"));
 	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "true");
@@ -359,7 +373,7 @@ test("local settings collapse after saving and reopen confirmed values, includin
 	assert.equal(document.querySelector('[data-testid="dictation-settings-editor"]'), null);
 	assert.equal(byTest("dictation-local-row").getAttribute("aria-expanded"), "false");
 	await click(byTest("dictation-local-row"));
-	assert.equal(localInput("Transcription URL").value, "http://localhost:8081/inference");
+	assert.equal(localInput("Base URL").value, "http://localhost:8081");
 	assert.equal(localInput("Dictation model ID").value, "whisper-large");
 	assert.match(byTest("local-dictation-language").textContent!, /French/);
 	await click(settingsButton("Remove key"));
@@ -372,11 +386,11 @@ test("local settings reject invalid URLs, lock during dictation, and keep drafts
 	const { KeysSection } = await import("../components/settings/keys-section.tsx");
 	await f.render(<KeysSection />);
 	await addDictationProvider("local");
-	await search("file:///tmp/audio", localInput("Transcription URL"));
+	await search("file:///tmp/audio", localInput("Base URL"));
 	await click(byTest("dictation-local-save"));
 	assert.match(document.querySelector('[role="alert"]')!.textContent!, /HTTP/);
 	assert.equal(f.state.writes.length, 0);
-	await search("http://localhost:8080/v1/audio/transcriptions", localInput("Transcription URL"));
+	await search("http://localhost:8080", localInput("Base URL"));
 	await search("lfm3", localInput("Dictation model ID"));
 	f.state.failWrite = true;
 	await click(byTest("dictation-local-save"));
@@ -390,6 +404,80 @@ test("local settings reject invalid URLs, lock during dictation, and keep drafts
 	await click(byTest("dictation-local-save"));
 	assert.equal(f.state.record.dictation?.local?.model, "lfm3");
 	assert.equal(f.state.record.dictation?.local?.language, "auto");
+});
+
+test("legacy endpoint settings reopen as a base URL and retain their saved key on save", async () => {
+	const f = await fixture();
+	const local = { server: "llama.cpp" as const, url: "http://localhost:8080/speech/v1/audio/transcriptions", language: "auto" };
+	f.state.record.dictation = { provider: "local", local };
+	f.state.credential = { url: local.url, key: "legacy-key" };
+	await act(async () => { notifySettingsSaved("dictation"); });
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await click(byTest("dictation-local-row"));
+	assert.equal(localInput("Base URL").value, "http://localhost:8080/speech");
+	assert.equal(localInput("Local dictation bearer key").placeholder, "Key saved for this endpoint");
+	await selectValue("Local dictation server", "whisper.cpp");
+	assert.equal(localInput("Local dictation bearer key").placeholder, "Keyless");
+	await selectValue("Local dictation server", "llama.cpp");
+	await click(byTest("dictation-local-save"));
+	assert.equal(f.state.record.dictation?.local?.url, "http://localhost:8080/speech");
+	assert.deepEqual(f.state.credential, { url: local.url, key: "legacy-key" });
+	assert.equal(f.state.credentialWrites, 0);
+	assert.match(byTest("dictation-local-status").textContent!, /API key/);
+});
+
+test("Test connection uses draft settings and reports ready, loading and failures without saving", async () => {
+	const f = await fixture();
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("local");
+	assert(byTest("dictation-local-test").disabled);
+	await selectValue("Local dictation server", "whisper.cpp");
+	await search("http://localhost:9999/proxy", localInput("Base URL"));
+	await search("draft-key", localInput("Local dictation bearer key"));
+	const original = structuredClone(f.state.record);
+	await click(byTest("dictation-local-test"));
+	assert.deepEqual(f.state.connectionCalls, [{ server: "whisper.cpp", url: "http://localhost:9999/proxy", key: "draft-key" }]);
+	assert.equal(byTest("dictation-local-connection").textContent, "Ready");
+	assert.equal(byTest("dictation-local-connection").getAttribute("role"), "status");
+	assert(byTest("dictation-local-connection").classList.contains("text-green-500"));
+	assert.equal(byTest("dictation-local-test").nextElementSibling, byTest("dictation-local-connection"));
+	await search("http://localhost:8888", localInput("Base URL"));
+	assert.equal(document.querySelector('[data-testid="dictation-local-connection"]'), null);
+	f.state.connectionResult = { status: "loading" };
+	await click(byTest("dictation-local-test"));
+	assert.equal(byTest("dictation-local-connection").textContent, "Model loading");
+	assert(byTest("dictation-local-connection").classList.contains("text-amber-500"));
+	f.state.connectionStatus = 502;
+	f.state.connectionResult = { error: "Could not connect to the server. Check the base URL and port." };
+	await click(byTest("dictation-local-test"));
+	assert.match(byTest("dictation-local-connection").textContent!, /base URL and port/);
+	assert.equal(byTest("dictation-local-connection").getAttribute("role"), "alert");
+	assert(byTest("dictation-local-connection").classList.contains("text-destructive"));
+	assert.deepEqual(f.state.record, original);
+	assert.equal(f.state.credentialWrites, 0);
+	assert.equal(f.state.writes.length, 0);
+	assert(byTest("dictation-settings-editor"));
+});
+
+test("connection testing shows progress and disables duplicate actions and capture-time checks", async () => {
+	const f = await fixture();
+	const { KeysSection } = await import("../components/settings/keys-section.tsx");
+	await f.render(<KeysSection />);
+	await addDictationProvider("local");
+	await search("http://localhost:8080", localInput("Base URL"));
+	let finish!: (response: Response) => void;
+	f.state.nextConnection = new Promise((resolve) => { finish = resolve; });
+	await click(byTest("dictation-local-test"));
+	assert.equal(byTest("dictation-local-test").textContent, "Testing…");
+	assert(byTest("dictation-local-test").disabled);
+	assert(byTest("dictation-local-save").disabled);
+	await act(async () => { finish(Response.json({ status: "ready" })); });
+	assert.equal(byTest("dictation-local-test").textContent, "Test connection");
+	assert(!byTest("dictation-local-test").disabled);
+	await act(async () => { setDictationActive(true); });
+	assert(byTest("dictation-local-test").disabled);
 });
 
 
@@ -454,10 +542,10 @@ test("dictation Add menu offers only unconfigured providers and opens the matchi
 	await key(byTest("provider-search"), "Enter");
 	assert(byTest("dictation-deepgram-editor"));
 	assert(byTest("key-deepgram_api_key-input"));
-	assert.equal(document.querySelector('input[aria-label="Transcription URL"]'), null);
+	assert.equal(document.querySelector('input[aria-label="Base URL"]'), null);
 	await click(byTest("key-deepgram_api_key-cancel"));
 	await addDictationProvider("local");
-	assert(localInput("Transcription URL"));
+	assert(localInput("Base URL"));
 	assert.equal(document.querySelector('[data-testid="dictation-deepgram-editor"]'), null);
 	assert.equal(f.state.writes.length, 0, "opening setup never activates or saves a provider");
 });
@@ -528,7 +616,7 @@ test("Deepgram shortcut opens unconfigured settings and removing its key never a
 	await click(byTest("key-deepgram_api_key-save"));
 	assert.equal(f.state.record.dictation?.provider, undefined);
 	await addDictationProvider("local");
-	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await search("http://localhost:8081", localInput("Base URL"));
 	await click(byTest("dictation-local-save"));
 	assert.equal(f.state.record.dictation?.provider, undefined);
 	await click(byTest("dictation-deepgram-row"));
@@ -563,8 +651,9 @@ test("provider language controls share styling and keyboard search while saving 
 	await addDictationProvider("local");
 	assert.equal(byTest("local-dictation-language").className, cloudClass);
 	const localRow = byTest("row-local-dictation-language");
-	assert(localRow.classList.contains("justify-start"));
-	assert.equal(localRow.parentElement!.lastElementChild, localRow, "Language is the last local setting");
+	assert(localRow.classList.contains("justify-between"));
+	assert.equal(localRow.previousElementSibling!.textContent, "Serverllama.cppwhisper.cpp", "Language follows Server");
+	assert(localRow.nextElementSibling!.contains(localInput("Base URL")), "Base URL follows Language");
 	assert.equal(localRow.children[0]!.textContent, "Language");
 	assert(localRow.contains(byTest("local-dictation-language")));
 	assert.match(byTest("local-dictation-language").textContent!, /Auto-detect/);
@@ -580,7 +669,7 @@ test("provider language controls share styling and keyboard search while saving 
 	assert.match(byTest("local-dictation-language").textContent!, /French/);
 	assert.equal(f.state.writes.length, 0, "local selection only updates the editor draft");
 	assert.equal(f.state.record.dictation?.language, "multi");
-	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await search("http://localhost:8081", localInput("Base URL"));
 	await click(byTest("dictation-local-save"));
 	assert.equal(f.state.record.dictation?.local?.language, "fr");
 	assert.equal(f.state.record.dictation?.language, "multi");
@@ -610,7 +699,7 @@ test("local picker supports custom backend codes, keeps Escape inside the menu, 
 	assert.equal(document.querySelector('[data-testid="local-dictation-language-menu"]'), null);
 	assert(byTest("dictation-settings-editor"));
 	assert.equal(f.state.outerEscapes, 0);
-	await search("http://localhost:8081/inference", localInput("Transcription URL"));
+	await search("http://localhost:8081", localInput("Base URL"));
 	await click(byTest("dictation-local-save"));
 	assert.equal(f.state.record.dictation?.local?.language, "xyz");
 	await click(byTest("dictation-local-row"));
@@ -659,6 +748,6 @@ test("Local actions match Deepgram styles; Delete clears saved config and key wi
 	assert.equal(f.state.record.dictation.provider, "local");
 	assert.equal(f.state.record.dictation.language, "pl");
 	await addDictationProvider("local");
-	assert.equal(localInput("Transcription URL").value, "");
+	assert.equal(localInput("Base URL").value, "");
 	assert.equal(document.querySelector('[data-testid="dictation-local-delete"]'), null, "unsaved providers have nothing to delete");
 });

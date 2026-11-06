@@ -7,6 +7,7 @@ export const LOCAL_DICTATION_AUTH = "__learnharness_local_dictation_auth";
 
 export interface LocalDictationSettings {
 	server: "llama.cpp" | "whisper.cpp";
+	/** Server base URL; previously saved full transcription URLs remain supported. */
 	url: string;
 	model?: string;
 	/** Absent/auto asks the backend to detect the language. */
@@ -20,6 +21,23 @@ export function normalizeDictationUrl(value: unknown): string {
 		if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || /[?#]/.test(value)) return "";
 		return url.toString();
 	} catch { return ""; }
+}
+
+export const LOCAL_DICTATION_PATHS = {
+	"llama.cpp": "/v1/audio/transcriptions",
+	"whisper.cpp": "/inference",
+} as const;
+
+/** Strip only the selected server's standard endpoint, preserving proxy prefixes. */
+export function localDictationBaseUrl(config: Pick<LocalDictationSettings, "server" | "url">): string {
+	const url = normalizeDictationUrl(config.url).replace(/\/+$/, "");
+	const suffix = LOCAL_DICTATION_PATHS[config.server];
+	return url.endsWith(suffix) ? url.slice(0, -suffix.length) : url;
+}
+
+export function localDictationEndpoint(config: Pick<LocalDictationSettings, "server" | "url">): string {
+	const base = localDictationBaseUrl(config);
+	return base ? base + LOCAL_DICTATION_PATHS[config.server] : "";
 }
 
 /** Backend-specific language codes; auto is distinct from Deepgram multilingual. */

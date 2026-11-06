@@ -5,7 +5,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { after, test } from "node:test";
-import { dictationWav, parseLocalDictation, validDictationWav, LOCAL_DICTATION_AUTH, LOCAL_DICTATION_MAX_BYTES } from "../src/core/local-dictation.ts";
+import { dictationWav, localDictationBaseUrl, localDictationEndpoint, parseLocalDictation, validDictationWav, LOCAL_DICTATION_AUTH, LOCAL_DICTATION_MAX_BYTES } from "../src/core/local-dictation.ts";
 import { sanitizeUserSettings } from "../src/core/settings.ts";
 import { parseDictationSettingsBody } from "../src/server/settings-body.ts";
 
@@ -13,7 +13,7 @@ const directory = mkdtempSync(path.join(tmpdir(), "lh-local-dictation-"));
 process.env.LH_DATA_DIR = directory;
 process.env.LH_AUTH_FILE = path.join(directory, "auth.json");
 after(() => rmSync(directory, { recursive: true, force: true }));
-const { transcribeLocal, localDictationPost, dictationCredentialsGet, dictationCredentialsPut, localDictationDelete } = await import("../src/server/local-dictation.ts");
+const { transcribeLocal, localDictationPost, dictationCredentialsGet, dictationCredentialsPut, localDictationDelete, localDictationTestPost } = await import("../src/server/local-dictation.ts");
 const { readDictationAuth, writeDictationAuth } = await import("../src/store/auth.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
 const { resolveKeyStatuses } = await import("../src/server/keys.ts");
@@ -57,6 +57,22 @@ for (const server of ["llama.cpp", "whisper.cpp"] as const) test(`${server} rece
 	}
 });
 
+for (const server of ["llama.cpp", "whisper.cpp"] as const) test(`${server} resolves base URLs and legacy endpoints without losing proxy prefixes`, async () => {
+	const suffix = server === "llama.cpp" ? "/v1/audio/transcriptions" : "/inference";
+	for (const prefix of ["", "/speech/proxy"]) {
+		const base = `http://localhost:8080${prefix}`;
+		for (const url of [base, `${base}/`, `${base}${suffix}`, `${base}${suffix}/`]) {
+			const config = { server, url };
+			assert.equal(localDictationBaseUrl(config), base);
+			assert.equal(localDictationEndpoint(config), base + suffix);
+			await transcribeLocal(wav, config, undefined, new AbortController().signal, async (input) => {
+				assert.equal(input, base + suffix);
+				return Response.json({ text: "recognized words" });
+			});
+		}
+	}
+});
+
 test("endpoint failures, redirects, invalid and oversized responses remain explicit", async () => {
 	for (const response of [new Response("secret error", { status: 401 }), new Response(null, { status: 302 }), Response.json({ unrelated: "bad" }), new Response("x", { headers: { "content-length": String(2 * 1024 * 1024) } })]) {
 		await assert.rejects(transcribeLocal(wav, local, undefined, new AbortController().signal, async () => response));
@@ -75,6 +91,98 @@ test("private bearer credentials are endpoint-bound, redacted, and excluded from
 	assert(!resolveKeyStatuses({ [LOCAL_DICTATION_AUTH]: "secret-key" }, {}, new Set()).some((row) => row.id === LOCAL_DICTATION_AUTH));
 	writeSettings({ version: 1, dictation: { provider: "local", local: { ...local, url: "http://localhost:9999/inference" } } });
 	assert.deepEqual(await dictationCredentialsGet().json(), { keyPresent: false });
+});
+
+test("base URL credentials remain bound to the resolved server endpoint and preserve legacy keys", async () => {
+	const base = "http://localhost:8080/speech";
+	const config = { ...local, url: base };
+	writeDictationAuth(`${base}/v1/audio/transcriptions`, "legacy-key");
+	writeSettings({ version: 1, dictation: { provider: "local", local: config } });
+	assert.deepEqual(await dictationCredentialsGet().json(), { keyPresent: true });
+	const response = await dictationCredentialsPut(new Request("http://localhost/api/stt/credentials", {
+		method: "PUT", headers: { origin: "http://localhost", host: "localhost", "content-type": "application/json" },
+		body: JSON.stringify({ server: "llama.cpp", url: `${base}/`, key: "replacement-key" }),
+	}));
+	assert.equal(response.status, 200);
+	assert.deepEqual(readDictationAuth(), { url: `${base}/v1/audio/transcriptions`, key: "replacement-key" });
+	writeSettings({ version: 1, dictation: { provider: "local", local: { ...config, server: "whisper.cpp" } } });
+	assert.deepEqual(await dictationCredentialsGet().json(), { keyPresent: false });
+});
+
+function connectionRequest(body: unknown = local, origin = "http://localhost", signal?: AbortSignal) {
+	return new Request("http://localhost/api/stt/test", {
+		method: "POST", headers: { origin, host: "localhost", "content-type": "application/json" },
+		body: JSON.stringify(body), signal,
+	});
+}
+
+test("connection tests probe draft health URLs and use only endpoint-bound keys without saving", async () => {
+	const { readSettings } = await import("../src/store/settings.ts");
+	const saved = { version: 1, dictation: { provider: "local" as const, local } };
+	writeSettings(saved);
+	writeDictationAuth(local.url, "saved-secret");
+	for (const config of [local, { ...local, url: "http://localhost:9999/proxy/" }, { ...local, server: "whisper.cpp" as const, url: "http://localhost:8080" }]) {
+		for (const key of [undefined, "draft-secret"]) {
+			const response = await localDictationTestPost(connectionRequest({ ...config, key }), async (input, init) => {
+				assert.equal(input, `${localDictationBaseUrl(config)}/health`);
+				assert.equal(init?.method, "GET");
+				assert.equal(init.body, undefined);
+				assert.equal(init.redirect, "manual");
+				assert.equal(new Headers(init.headers).get("authorization"), key ? "Bearer draft-secret" : config === local ? "Bearer saved-secret" : null);
+				return Response.json({ status: "ok" });
+			});
+			assert.equal(response.status, 200);
+			assert.deepEqual(await response.json(), { status: "ready" });
+		}
+	}
+	assert.deepEqual(readSettings(), saved);
+	assert.deepEqual(readDictationAuth(), { url: local.url, key: "saved-secret" });
+});
+
+test("connection tests distinguish loading, authentication, invalid responses and unreachable servers", async () => {
+	for (const health of [{ status: "loading model" }, { error: { message: "Loading model" } }]) {
+		const response = await localDictationTestPost(connectionRequest(), async () => Response.json(health, { status: 503 }));
+		assert.deepEqual(await response.json(), { status: "loading" });
+	}
+	for (const status of [401, 403, 404, 302, 503]) {
+		const response = await localDictationTestPost(connectionRequest(), async () => Response.json({ status: "unavailable", secret: "must not leak" }, { status }));
+		assert.equal(response.status, 502);
+		const body = await response.json();
+		assert.match(body.error, status === 401 || status === 403 ? /authentication/ : status === 503 ? /did not report/ : new RegExp(String(status)));
+		assert(!JSON.stringify(body).includes("must not leak"));
+	}
+	for (const upstream of [new Response("<html>Other server</html>"), Response.json({ unrelated: true })]) {
+		assert.equal((await localDictationTestPost(connectionRequest(), async () => upstream)).status, 502);
+	}
+	const unreachable = await localDictationTestPost(connectionRequest(), async () => { throw new TypeError("fetch failed"); });
+	assert.match((await unreachable.json()).error, /base URL and port/);
+});
+
+test("connection tests reject foreign origins and invalid drafts before contacting a server", async () => {
+	let calls = 0;
+	const probe: typeof fetch = async () => { calls++; return Response.json({ status: "ok" }); };
+	assert.equal((await localDictationTestPost(connectionRequest(local, "http://foreign.invalid"), probe)).status, 403);
+	for (const body of [{ ...local, url: "file:///tmp/model" }, { ...local, key: "bad\nkey" }, { ...local, server: "other" }]) {
+		assert.equal((await localDictationTestPost(connectionRequest(body), probe)).status, 400);
+	}
+	assert.equal(calls, 0);
+});
+
+test("connection test times out after five seconds and cancels the upstream request", async (context) => {
+	context.mock.timers.enable({ apis: ["setTimeout"] });
+	let started!: () => void;
+	const probing = new Promise<void>((resolve) => { started = resolve; });
+	const pending = localDictationTestPost(connectionRequest(), async (_input, init) => {
+		return new Promise<Response>((_resolve, reject) => {
+			init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+			started();
+		});
+	});
+	await probing;
+	context.mock.timers.tick(5_000);
+	const response = await pending;
+	assert.equal(response.status, 504);
+	assert.match((await response.json()).error, /5 seconds/);
 });
 
 test("upload rejects changed configuration, oversized bodies, invalid WAV, and foreign origins", async () => {

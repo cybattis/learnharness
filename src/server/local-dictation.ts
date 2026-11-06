@@ -1,5 +1,5 @@
 import type { UserSettings } from "../core/settings.ts";
-import { LOCAL_DICTATION_MAX_BYTES, LOCAL_DICTATION_TIMEOUT_MS, normalizeDictationUrl, parseLocalDictation, validDictationWav, type LocalDictationSettings } from "../core/local-dictation.ts";
+import { LOCAL_DICTATION_MAX_BYTES, LOCAL_DICTATION_TIMEOUT_MS, localDictationBaseUrl, localDictationEndpoint, normalizeDictationUrl, parseLocalDictation, validDictationWav, type LocalDictationSettings } from "../core/local-dictation.ts";
 import { readDictationAuth, writeDictationAuth } from "../store/auth.ts";
 import { readSettings, writeSettings } from "../store/settings.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
@@ -19,7 +19,8 @@ function authorized(request: Request): boolean {
 export function dictationCredentialsGet(): Response {
 	try {
 		const auth = readDictationAuth();
-		return Response.json({ keyPresent: Boolean(auth?.key && auth.url === readSettings()?.dictation?.local?.url) }, { headers: { "cache-control": "no-store" } });
+		const config = parseLocalDictation(readSettings()?.dictation?.local);
+		return Response.json({ keyPresent: Boolean(auth?.key && config && auth.url === localDictationEndpoint(config)) }, { headers: { "cache-control": "no-store" } });
 	} catch { return failure("Local dictation credential storage unavailable", 503); }
 }
 
@@ -28,8 +29,10 @@ export async function dictationCredentialsPut(request: Request): Promise<Respons
 	try {
 		const body = await readBoundedJson(request, 16_384);
 		if (!body || typeof body !== "object" || Array.isArray(body)) return failure("Invalid credential request");
-		const { url: rawUrl, key } = body as Record<string, unknown>;
-		const url = normalizeDictationUrl(rawUrl);
+		const { url: rawUrl, key, server } = body as Record<string, unknown>;
+		if (server !== undefined && server !== "llama.cpp" && server !== "whisper.cpp") return failure("Invalid dictation server");
+		const normalized = normalizeDictationUrl(rawUrl);
+		const url = normalized && server ? localDictationEndpoint({ server, url: normalized }) : normalized;
 		if (!url || typeof key !== "string" || key.length > 8192 || /[\r\n\x00-\x1f\x7f-\uffff]/.test(key)) return failure("Invalid endpoint or bearer key");
 		writeDictationAuth(url, key.trim());
 		return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
@@ -39,6 +42,55 @@ export async function dictationCredentialsPut(request: Request): Promise<Respons
 }
 
 const deletionStore = { readSettings, writeSettings, readAuth: readDictationAuth, writeAuth: writeDictationAuth };
+
+/** Probe a draft endpoint without saving settings or running inference. */
+export async function localDictationTestPost(request: Request, probe: typeof fetch = fetch): Promise<Response> {
+	if (!authorized(request)) return failure("Use the LearnHarness settings window", 403);
+	const timeout = new AbortController();
+	const timer = setTimeout(() => timeout.abort(), 5_000);
+	try {
+		const body = await readBoundedJson(request, 16_384);
+		const config = parseLocalDictation(body);
+		if (!config) return failure("Enter a full HTTP(S) base URL.");
+		const draftKey = (body as { key?: unknown }).key;
+		if (draftKey !== undefined && (typeof draftKey !== "string" || draftKey.length > 8192 || /[\r\n\x00-\x1f\x7f-\uffff]/.test(draftKey))) return failure("Invalid bearer key");
+		let key = typeof draftKey === "string" ? draftKey.trim() : "";
+		if (!key) {
+			const auth = readDictationAuth();
+			if (auth?.url === localDictationEndpoint(config)) key = auth.key;
+		}
+		const response = await probe(`${localDictationBaseUrl(config)}/health`, {
+			method: "GET", redirect: "manual", cache: "no-store",
+			signal: AbortSignal.any([request.signal, timeout.signal]),
+			headers: key ? { Authorization: `Bearer ${key}` } : {},
+		});
+		if (response.status === 401 || response.status === 403) {
+			await response.body?.cancel();
+			return failure(`Server rejected authentication (HTTP ${response.status}). Check the bearer key.`, 502);
+		}
+		if (!response.ok && response.status !== 503) {
+			await response.body?.cancel();
+			return failure(`Server health check returned HTTP ${response.status}.`, 502);
+		}
+		let health: unknown;
+		try { health = await readBoundedJson(response, 16_384); }
+		catch (error) {
+			if (timeout.signal.aborted || request.signal.aborted) throw error;
+			return failure("Server returned an invalid health response.", 502);
+		}
+		const status = health && typeof health === "object" ? (health as { status?: unknown; error?: { message?: unknown } }) : undefined;
+		if (response.ok && status?.status === "ok") return Response.json({ status: "ready" }, { headers: { "cache-control": "no-store" } });
+		if (response.status === 503 && [status?.status, status?.error?.message].some((value) => typeof value === "string" && /\bloading\b/i.test(value))) {
+			return Response.json({ status: "loading" }, { headers: { "cache-control": "no-store" } });
+		}
+		return failure("Server did not report a ready or loading model.", 502);
+	} catch (error) {
+		if (timeout.signal.aborted) return failure("Connection test timed out after 5 seconds.", 504);
+		if (request.signal.aborted) return failure("Connection test cancelled.", 499);
+		if (error instanceof CustomBodyLimitError) return failure("Connection test request is too large.", 413);
+		return failure("Could not connect to the server. Check the base URL and port.", 502);
+	} finally { clearTimeout(timer); }
+}
 
 /** Remove the saved configuration and its key without selecting another engine. */
 export async function localDictationDelete(request: Request, store: {
@@ -83,7 +135,7 @@ export async function transcribeLocal(
 	if (config.model) form.set("model", config.model);
 	if (config.language && config.language !== "auto") form.set("language", config.language);
 	else if (config.server === "whisper.cpp") form.set("language", "auto");
-	const response = await request(config.url, {
+	const response = await request(localDictationEndpoint(config), {
 		method: "POST", body: form, signal, redirect: "manual",
 		headers: key ? { Authorization: `Bearer ${key}` } : {},
 	});
@@ -129,7 +181,7 @@ export async function localDictationPost(request: Request): Promise<Response> {
 		if (!validDictationWav(wav)) return failure("Expected a nonempty 16 kHz mono PCM16 WAV recording");
 		if (request.signal.aborted) return failure("Dictation cancelled", 499);
 		const auth = readDictationAuth();
-		const text = await transcribeLocal(wav, config, auth?.url === config.url ? auth.key : undefined, AbortSignal.any([request.signal, timeout.signal]));
+		const text = await transcribeLocal(wav, config, auth?.url === localDictationEndpoint(config) ? auth.key : undefined, AbortSignal.any([request.signal, timeout.signal]));
 		return Response.json({ text }, { headers: { "cache-control": "no-store" } });
 	} catch (error) {
 		if (timeout.signal.aborted) return failure("Local transcription timed out after 5 minutes", 504);
